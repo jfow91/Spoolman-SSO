@@ -22,36 +22,40 @@ import pytest
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 
-from .conftest import URL
+from .conftest import BASE_URL, URL, login
 
 WS_URL = URL.replace("http://", "ws://", 1)
 
 OWN_HOST = urlsplit(URL).netloc
-OWN_ORIGIN = URL
+OWN_ORIGIN = BASE_URL
 EVIL_ORIGIN = "https://evil.example"
+
+# The origin guard protects the browser session cookie, the only ambient credential; a personal key
+# in the URL is not something a foreign page can make the browser send, so it is exempt.
+SESSION = login("tester-a")
 
 
 def test_cross_origin_write_is_refused():
     """A write from a foreign origin must be refused, and must not change anything."""
-    before = httpx.get(f"{URL}/api/v1/setting/currency")
+    before = SESSION.get(f"{BASE_URL}/api/v1/setting/currency")
     before.raise_for_status()
 
-    result = httpx.post(
-        f"{URL}/api/v1/setting/currency",
+    result = SESSION.post(
+        f"{BASE_URL}/api/v1/setting/currency",
         json='"HAX"',
         headers={"Origin": EVIL_ORIGIN},
     )
     assert result.status_code == 403
 
-    after = httpx.get(f"{URL}/api/v1/setting/currency")
+    after = SESSION.get(f"{BASE_URL}/api/v1/setting/currency")
     after.raise_for_status()
     assert after.json() == before.json()
 
 
 def test_same_origin_write_is_allowed():
     """The web UI's own origin must keep working."""
-    result = httpx.post(
-        f"{URL}/api/v1/setting/currency",
+    result = SESSION.post(
+        f"{BASE_URL}/api/v1/setting/currency",
         json='"SEK"',
         headers={"Origin": OWN_ORIGIN},
     )
@@ -59,7 +63,7 @@ def test_same_origin_write_is_allowed():
     assert result.json()["value"] == '"SEK"'
 
     # Cleanup
-    httpx.post(f"{URL}/api/v1/setting/currency", json="").raise_for_status()
+    SESSION.post(f"{BASE_URL}/api/v1/setting/currency", json="").raise_for_status()
 
 
 def test_write_without_an_origin_header_is_allowed():
@@ -78,20 +82,20 @@ def test_cross_origin_read_is_allowed():
 
 
 def test_cross_origin_delete_is_refused():
-    result = httpx.delete(f"{URL}/api/v1/spool/1", headers={"Origin": EVIL_ORIGIN})
+    result = SESSION.delete(f"{BASE_URL}/api/v1/spool/1", headers={"Origin": EVIL_ORIGIN})
     assert result.status_code == 403
 
 
 def test_cross_origin_backup_is_refused():
     """A bodyless form post to /backup would otherwise rotate away every restore point."""
-    result = httpx.post(f"{URL}/api/v1/backup", headers={"Origin": EVIL_ORIGIN})
+    result = SESSION.post(f"{BASE_URL}/api/v1/backup", headers={"Origin": EVIL_ORIGIN})
     assert result.status_code == 403
 
 
 def test_forwarded_host_is_accepted():
     """A reverse proxy that rewrites Host must not have its own web UI refused."""
-    result = httpx.post(
-        f"{URL}/api/v1/setting/currency",
+    result = SESSION.post(
+        f"{BASE_URL}/api/v1/setting/currency",
         json='"SEK"',
         headers={
             "Host": "127.0.0.1:1234",
@@ -102,12 +106,12 @@ def test_forwarded_host_is_accepted():
     assert result.status_code == 200
 
     # Cleanup
-    httpx.post(f"{URL}/api/v1/setting/currency", json="").raise_for_status()
+    SESSION.post(f"{BASE_URL}/api/v1/setting/currency", json="").raise_for_status()
 
 
 def test_forwarded_host_does_not_admit_a_foreign_origin():
-    result = httpx.post(
-        f"{URL}/api/v1/setting/currency",
+    result = SESSION.post(
+        f"{BASE_URL}/api/v1/setting/currency",
         json='"HAX"',
         headers={
             "Host": "127.0.0.1:1234",
@@ -170,7 +174,13 @@ async def test_rebound_websocket_is_refused():
 async def test_cross_origin_websocket_is_refused():
     """Websockets bypass CORS, so this is the one channel that leaks reads cross-origin."""
     with pytest.raises(InvalidStatus) as excinfo:
-        async with connect(f"{WS_URL}/api/v1/spool", additional_headers={"Origin": EVIL_ORIGIN}):
+        async with connect(
+            f"{BASE_URL.replace('http://', 'ws://', 1)}/api/v1/spool",
+            additional_headers={
+                "Origin": EVIL_ORIGIN,
+                "Cookie": f"spoolman_session={SESSION.cookies['spoolman_session']}",
+            },
+        ):
             pass
     assert excinfo.value.response.status_code == 403
 

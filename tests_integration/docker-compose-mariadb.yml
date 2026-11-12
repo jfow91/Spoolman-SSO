@@ -1,5 +1,7 @@
 version: '3.9'
 services:
+  fake-oidc:
+    image: donkie/spoolman-fake-oidc:test
   db:
     image: mariadb:latest
     environment:
@@ -35,9 +37,16 @@ services:
       # tests need one that is allowed as well as one that is not.
       - SPOOLMAN_ALLOWED_HOSTS=spoolman.example.com
       - TZ=Europe/Stockholm
+      - SPOOLMAN_OIDC_ISSUER=http://fake-oidc:9000
+      - SPOOLMAN_OIDC_CLIENT_ID=spoolman
+      - SPOOLMAN_OIDC_CLIENT_SECRET=test-secret
+      - SPOOLMAN_PUBLIC_URL=http://spoolman:8000
+      - SPOOLMAN_SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
     depends_on:
       db:
         condition: service_healthy
+      fake-oidc:
+        condition: service_started
   tester:
     image: donkie/spoolman-tester:latest
     volumes:

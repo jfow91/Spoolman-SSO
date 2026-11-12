@@ -13,7 +13,7 @@ import pytest
 
 TIMEOUT = 30
 
-URL = "http://" + os.environ.get("SPOOLMAN_HOST", "spoolman") + ":" + os.environ.get("SPOOLMAN_PORT", "8000")
+BASE_URL = "http://" + os.environ.get("SPOOLMAN_HOST", "spoolman") + ":" + os.environ.get("SPOOLMAN_PORT", "8000")
 
 
 class DbType(StrEnum):
@@ -37,13 +37,13 @@ def get_db_type() -> DbType:
     return db_type
 
 
-def pytest_sessionstart(session):  # noqa: ARG001, ANN001
-    """Wait for the server to start up."""
+def _wait_for_server() -> None:
+    """Wait for the server to start up. Polls the public health check, since / now redirects to sign-in."""
     start_time = time.time()
     while True:
         try:
             print("pytest: Waiting for spoolman to be available...")  # noqa: T201
-            response = httpx.get(URL, timeout=1)
+            response = httpx.get(f"{BASE_URL}/api/v1/health", timeout=1)
             response.raise_for_status()
             print("pytest: Spoolman now seems to be up!")  # noqa: T201
         except httpx.HTTPError:  # noqa: PERF203
@@ -52,6 +52,39 @@ def pytest_sessionstart(session):  # noqa: ARG001, ANN001
             time.sleep(0.5)
         else:
             break
+
+
+def login(sub: str, *, name: str | None = None, groups: list[str] | None = None) -> httpx.Client:
+    """Sign in through the fake PocketID like a browser would; return a client carrying the session cookie."""
+    client = httpx.Client(timeout=TIMEOUT)
+    to_authorize = client.get(f"{BASE_URL}/auth/login")
+    assert to_authorize.status_code == 302, to_authorize.text
+    # The fake provider auto-approves as whoever these extra parameters name.
+    identity = {"login_sub": sub, "login_name": name or sub}
+    if groups is not None:
+        identity["login_groups"] = ",".join(groups)
+    to_callback = client.get(httpx.URL(to_authorize.headers["location"]).copy_merge_params(identity))
+    assert to_callback.status_code == 302, to_callback.text
+    signed_in = client.get(to_callback.headers["location"])
+    assert signed_in.status_code == 302, signed_in.text
+    assert "spoolman_session" in client.cookies
+    return client
+
+
+def make_key(sub: str, level: str = "edit") -> str:
+    """Sign in as `sub` and mint a personal key at `level`; keys are session-only to create."""
+    client = login(sub)
+    try:
+        result = client.post(f"{BASE_URL}/api/v1/keys", json={"name": f"{sub}-{level}", "level": level})
+    finally:
+        client.close()
+    assert result.status_code == 201, result.text
+    return result.json()["key"]
+
+
+_wait_for_server()
+# Every pre-existing test addresses the server through this prefix, so it runs as user tester-a.
+URL = f"{BASE_URL}/k/{make_key('tester-a')}"
 
 
 @contextmanager

@@ -20,18 +20,25 @@ async def refresh(engine: AsyncEngine) -> None:
 
 def used(spool_id: int, filament_id: int) -> float | None:
     """Return a spool's exported used weight, or None if it is not exported."""
-    labels = {"spool_id": str(spool_id), "filament_id": str(filament_id)}
+    labels = {"spool_id": str(spool_id), "filament_id": str(filament_id), "owner": "a"}
     return registry.get_sample_value("spoolman_spool_weight_used", labels)
 
 
 def density(filament_id: int) -> float | None:
     """Return a filament's exported density, or None if it is not exported."""
-    return registry.get_sample_value("spoolman_filament_density", {"filament_id": str(filament_id)})
+    return registry.get_sample_value("spoolman_filament_density", {"filament_id": str(filament_id), "owner": "a"})
 
 
 def info(filament_id: int, name: str) -> float | None:
     """Return a vendorless filament's exported info sample, or None if it is not exported."""
-    labels = {"filament_id": str(filament_id), "vendor": "-", "name": name, "material": "None", "color": "None"}
+    labels = {
+        "filament_id": str(filament_id),
+        "vendor": "-",
+        "name": name,
+        "material": "None",
+        "color": "None",
+        "owner": "a",
+    }
     return registry.get_sample_value("spoolman_filament_info", labels)
 
 
@@ -69,4 +76,52 @@ async def test_refresh_drops_archived_and_deleted() -> None:
     assert info(kept.id, "Kept") == 1
     assert info(gone.id, "Gone") is None
 
+    await engine.dispose()
+
+
+async def _engine_with(*names: str) -> tuple[AsyncEngine, list[int]]:
+    """Build a database holding one user per display name, each owning one spool of its own filament."""
+    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    async with engine.begin() as conn:
+        await conn.run_sync(models.Base.metadata.create_all)
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+    spool_ids = []
+    async with AsyncSession(engine, expire_on_commit=False) as db:
+        for i, name in enumerate(names):
+            owner = (await make_user(db, f"sub-{i}", name)).id
+            f = models.Filament(owner_id=owner, registered=now, density=1.24, diameter=1.75)
+            s = models.Spool(owner_id=owner, filament=f, registered=now, used_weight=i + 1)
+            db.add_all([f, s])
+            await db.flush()
+            spool_ids.append(s.id)
+        await db.commit()
+    return engine, spool_ids
+
+
+def _owner_of_spool(spool_id: int) -> str | None:
+    """Return the owner label the spool's used-weight series is exported under."""
+    for metric in registry.collect():
+        if metric.name == "spoolman_spool_weight_used":
+            for sample in metric.samples:
+                if sample.labels["spool_id"] == str(spool_id):
+                    return sample.labels["owner"]
+    return None
+
+
+@pytest.mark.asyncio
+async def test_metrics_have_owner_label() -> None:
+    """Every per-account series carries the owner's display name as a slug."""
+    engine, (spool_id,) = await _engine_with("Jane Doe-Smith!")
+    await refresh(engine)
+    assert _owner_of_spool(spool_id) == "jane_doe_smith_"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_owner_label_collision_suffixed() -> None:
+    """Two owners whose names slug the same: the first keeps the slug, the other gets _<user_id>."""
+    engine, (first, second) = await _engine_with("Bob", "bob")
+    await refresh(engine)
+    assert _owner_of_spool(first) == "bob"
+    assert _owner_of_spool(second) == "bob_2"
     await engine.dispose()

@@ -299,6 +299,7 @@ async def _broadcast(scope: Scope, result: TagScan) -> None:
                 date=datetime.utcnow(),
                 payload=result,
             ),
+            scope.account_id,
         )
     except Exception:
         # Same reasoning as spool_changed: a websocket failure must never fail the request
@@ -338,7 +339,7 @@ async def notify_any(
     scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
-    scan_websocket_manager.connect(_pool(scope), websocket)
+    scan_websocket_manager.connect(_pool(scope), websocket, scope)
     try:
         while True:
             await asyncio.sleep(0.5)
@@ -358,7 +359,7 @@ async def notify(
     scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
-    scan_websocket_manager.connect(_pool(scope, reader_id), websocket)
+    scan_websocket_manager.connect(_pool(scope, reader_id), websocket, scope)
     try:
         while True:
             await asyncio.sleep(0.5)

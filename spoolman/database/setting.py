@@ -36,7 +36,7 @@ async def update(
     # Commit before notifying so the setting is durable and visible to subsequent
     # requests; post-commit notification must be the last, infallible step.
     await db.commit()
-    await setting_changed(definition, value, EventType.UPDATED)
+    await setting_changed(definition, value, EventType.UPDATED, scope.account_id)
 
 
 async def _find(db: AsyncSession, scope: Scope, key: str) -> models.Setting | None:
@@ -67,7 +67,7 @@ async def delete(db: AsyncSession, scope: Scope, definition: SettingDefinition) 
     # Commit before notifying so the deletion is durable and visible to subsequent
     # requests; post-commit notification must be the last, infallible step.
     await db.commit()
-    await setting_changed(definition, None, EventType.DELETED)
+    await setting_changed(definition, None, EventType.DELETED, setting.owner_id)
 
 
 async def get_app_setting(db: AsyncSession, key: str) -> str | None:
@@ -87,11 +87,17 @@ async def set_app_setting(db: AsyncSession, key: str, value: str | None) -> None
     else:
         await db.merge(models.AppSetting(key=key, value=value, last_updated=datetime.utcnow().replace(microsecond=0)))
     await db.commit()
-    await setting_changed(parse_setting(key), value, EventType.DELETED if value is None else EventType.UPDATED)
+    # owner None: base_url is app-wide, so every account hears about it.
+    await setting_changed(parse_setting(key), value, EventType.DELETED if value is None else EventType.UPDATED, None)
 
 
-async def setting_changed(definition: SettingDefinition, set_value: str | None, typ: EventType) -> None:
-    """Notify websocket clients that a setting has changed."""
+async def setting_changed(
+    definition: SettingDefinition,
+    set_value: str | None,
+    typ: EventType,
+    owner_id: int | None,
+) -> None:
+    """Notify the owning account's websocket clients that a setting has changed (everyone's if owner_id is None)."""
     await websocket_manager.send(
         ("setting", str(definition.key)),
         SettingEvent(
@@ -100,4 +106,5 @@ async def setting_changed(definition: SettingDefinition, set_value: str | None, 
             date=datetime.utcnow(),
             payload=SettingKV.from_db(definition, set_value),
         ),
+        owner_id,
     )

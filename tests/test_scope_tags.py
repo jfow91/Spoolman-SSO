@@ -74,7 +74,7 @@ async def test_relay_not_delivered_cross_account():
         (tag_api._pool(b, "ip-1"), ws_b_reader),  # noqa: SLF001
     ]
     for pool, ws in pools:
-        scan_websocket_manager.connect(pool, ws)
+        scan_websocket_manager.connect(pool, ws, scope_for_user(int(pool[0])))
     try:
         await tag_api._broadcast(a, TagScan(uid=UID, reader_id="ip-1", created=False))  # noqa: SLF001
     finally:

@@ -433,10 +433,10 @@ async def find(
 )
 async def notify_any(
     websocket: WebSocket,
-    _scope: Annotated[Scope, Depends(get_scope)],
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
-    websocket_manager.connect(("spool",), websocket)
+    websocket_manager.connect(("spool",), websocket, scope)
     try:
         while True:
             await asyncio.sleep(0.5)
@@ -749,11 +749,11 @@ async def get(
 )
 async def notify(
     websocket: WebSocket,
-    _scope: Annotated[Scope, Depends(get_scope)],
+    scope: Annotated[Scope, Depends(get_scope)],
     spool_id: int,
 ) -> None:
     await websocket.accept()
-    websocket_manager.connect(("spool", str(spool_id)), websocket)
+    websocket_manager.connect(("spool", str(spool_id)), websocket, scope)
     try:
         while True:
             await asyncio.sleep(0.5)

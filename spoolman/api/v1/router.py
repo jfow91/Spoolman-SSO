@@ -4,13 +4,15 @@
 
 import asyncio
 import logging
+from typing import Annotated
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 from starlette.responses import Response
 
 from spoolman import env, update_check
+from spoolman.access.scope import Scope, get_scope
 from spoolman.database.database import backup_global_db
 from spoolman.exceptions import AccessDeniedError, ItemNotFoundError
 from spoolman.externaldb import get_external_db_name
@@ -100,9 +102,10 @@ async def backup():  # noqa: ANN201
 )
 async def notify(
     websocket: WebSocket,
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
-    websocket_manager.connect((), websocket)
+    websocket_manager.connect((), websocket, scope)
     try:
         while True:
             await asyncio.sleep(0.5)

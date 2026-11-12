@@ -183,6 +183,7 @@ async def vendor_changed(vendor: models.Vendor, typ: EventType) -> None:
                 date=datetime.utcnow(),
                 payload=Vendor.from_db(vendor),
             ),
+            vendor.owner_id,
         )
     except Exception:
         # Important to have a catch-all here since we don't want to stop the call if this fails.

@@ -344,6 +344,7 @@ async def filament_changed(filament: models.Filament, typ: EventType) -> None:
                 date=datetime.utcnow(),
                 payload=Filament.from_db(filament),
             ),
+            filament.owner_id,
         )
     except Exception:
         # Important to have a catch-all here since we don't want to stop the call if this fails.

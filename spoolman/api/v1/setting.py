@@ -75,10 +75,10 @@ async def _read(db: AsyncSession, scope: Scope, definition: SettingDefinition) -
 )
 async def notify_any(
     websocket: WebSocket,
-    _scope: Annotated[Scope, Depends(get_scope)],
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
-    websocket_manager.connect(("setting",), websocket)
+    websocket_manager.connect(("setting",), websocket, scope)
     try:
         while True:
             await asyncio.sleep(0.5)
@@ -160,7 +160,7 @@ async def find(
 )
 async def notify(
     websocket: WebSocket,
-    _scope: Annotated[Scope, Depends(get_scope)],
+    scope: Annotated[Scope, Depends(get_scope)],
     key: str,
 ) -> None:
     try:
@@ -170,7 +170,7 @@ async def notify(
         return
 
     await websocket.accept()
-    websocket_manager.connect(("setting", str(key)), websocket)
+    websocket_manager.connect(("setting", str(key)), websocket, scope)
     try:
         while True:
             await asyncio.sleep(0.5)

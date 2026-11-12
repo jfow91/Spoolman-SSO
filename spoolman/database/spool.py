@@ -1386,6 +1386,7 @@ async def spool_changed(spool: models.Spool, typ: EventType) -> None:
                 date=datetime.utcnow(),
                 payload=Spool.from_db(spool),
             ),
+            spool.owner_id,
         )
     except Exception:
         # Important to have a catch-all here since we don't want to stop the call if this fails.

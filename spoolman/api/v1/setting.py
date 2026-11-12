@@ -75,6 +75,7 @@ async def _read(db: AsyncSession, scope: Scope, definition: SettingDefinition) -
 )
 async def notify_any(
     websocket: WebSocket,
+    _scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
     websocket_manager.connect(("setting",), websocket)
@@ -159,6 +160,7 @@ async def find(
 )
 async def notify(
     websocket: WebSocket,
+    _scope: Annotated[Scope, Depends(get_scope)],
     key: str,
 ) -> None:
     try:

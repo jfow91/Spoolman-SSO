@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from spoolman.database import models, spool
+from tests.support.dbsession import make_user
 
 
 @pytest.mark.asyncio
@@ -25,8 +26,12 @@ async def test_measure_tare(spool_weight: float | None, expected_used: float) ->
 
     async with AsyncSession(engine, expire_on_commit=False) as db:
         now = datetime(2026, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None)  # stored naive, as UTC
-        filament = models.Filament(registered=now, density=1.24, diameter=1.75, weight=1000, spool_weight=250)
+        owner = (await make_user(db)).id
+        filament = models.Filament(
+            owner_id=owner, registered=now, density=1.24, diameter=1.75, weight=1000, spool_weight=250
+        )
         item = models.Spool(
+            owner_id=owner,
             filament=filament,
             registered=now,
             initial_weight=1000,

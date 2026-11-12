@@ -10,30 +10,30 @@ through the actual HTTP endpoint (POST /tag/scan with `create: true`) lives in
 tests_integration/tests/tag/ instead, where a real server is already up.
 """
 
-from collections.abc import AsyncGenerator
-
 import pytest
 import pytest_asyncio
 import sqlalchemy
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from spoolman.database import models
 from spoolman.database.tag import create_spool_from_decoded_tag, find_spool_by_uid
 from spoolman.exceptions import ItemCreateError, TagConflictError
 from spoolman.tags.decode import DecodedTag
+from tests.support.dbsession import make_user
 
 
-@pytest_asyncio.fixture
-async def db() -> AsyncGenerator[AsyncSession, None]:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as conn:
-        await conn.run_sync(models.Base.metadata.create_all)
+@pytest_asyncio.fixture(autouse=True)
+async def _owner(db: AsyncSession) -> None:
+    """Stamp an owner on every new row until Task 10 threads one through create_spool_from_decoded_tag."""
+    owner_id = (await make_user(db)).id
+    await db.commit()  # so a rollback inside the code under test keeps the owner
 
-    session_maker = async_sessionmaker(engine, autocommit=False, autoflush=True, expire_on_commit=False)
-    async with session_maker() as session:
-        yield session
+    def stamp(session: sqlalchemy.orm.Session, _context: object, _instances: object) -> None:
+        for obj in session.new:
+            if hasattr(obj, "owner_id") and obj.owner_id is None:
+                obj.owner_id = owner_id
 
-    await engine.dispose()
+    sqlalchemy.event.listen(db.sync_session, "before_flush", stamp)
 
 
 def _uid(suffix: str = "1") -> str:

@@ -16,3 +16,6 @@ _TMP_DIR = Path(tempfile.mkdtemp(prefix="spoolman-unit-tests-"))
 os.environ.setdefault("SPOOLMAN_DIR_DATA", str(_TMP_DIR / "data"))
 os.environ.setdefault("SPOOLMAN_DIR_LOGS", str(_TMP_DIR / "logs"))
 os.environ.setdefault("SPOOLMAN_DIR_BACKUPS", str(_TMP_DIR / "backups"))
+
+# Shared fixtures (`db`) for the tests that need a real database session.
+pytest_plugins = ["tests.support.dbsession"]

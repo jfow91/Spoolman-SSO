@@ -8,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from spoolman.database import models
 from spoolman.prometheus.metrics import filament_metrics, registry, spool_metrics
+from tests.support.dbsession import make_user
 
 
 async def refresh(engine: AsyncEngine) -> None:
@@ -43,9 +44,10 @@ async def test_refresh_drops_archived_and_deleted() -> None:
 
     now = datetime(2026, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None)  # stored naive, as UTC
     async with AsyncSession(engine, expire_on_commit=False) as db:
-        kept = models.Filament(registered=now, name="Kept", density=1.24, diameter=1.75)
-        gone = models.Filament(registered=now, name="Gone", density=1.27, diameter=1.75)
-        spools = [models.Spool(filament=kept, registered=now, used_weight=w) for w in (10, 20, 30)]
+        owner = (await make_user(db)).id
+        kept = models.Filament(owner_id=owner, registered=now, name="Kept", density=1.24, diameter=1.75)
+        gone = models.Filament(owner_id=owner, registered=now, name="Gone", density=1.27, diameter=1.75)
+        spools = [models.Spool(owner_id=owner, filament=kept, registered=now, used_weight=w) for w in (10, 20, 30)]
         db.add_all([kept, gone, *spools])
         await db.commit()
 

@@ -12,6 +12,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from spoolman import env, update_check
+from spoolman.access.principal import Principal, get_principal
 from spoolman.access.scope import Scope, get_scope
 from spoolman.database.database import backup_global_db
 from spoolman.exceptions import AccessDeniedError, ItemNotFoundError
@@ -81,12 +82,15 @@ async def health() -> models.HealthCheck:
 # Add endpoint for triggering a db backup
 @app.post(
     "/backup",
-    description="Trigger a database backup. Only applicable for SQLite databases.",
+    description="Trigger a database backup. Only applicable for SQLite databases. Admins only.",
     response_model=models.BackupResponse,
-    responses={500: {"model": models.Message}},
+    responses={403: {"model": models.Message}, 500: {"model": models.Message}},
 )
-async def backup():  # noqa: ANN201
+async def backup(principal: Annotated[Principal, Depends(get_principal)]):  # noqa: ANN201
     """Trigger a database backup."""
+    # The backup covers, and rotates restore points for, every account on the instance.
+    if not principal.is_admin:
+        raise AccessDeniedError("Admins only")
     result = await backup_global_db()
     if result.path is None:
         return JSONResponse(

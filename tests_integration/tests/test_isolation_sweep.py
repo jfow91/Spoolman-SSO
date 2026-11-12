@@ -20,7 +20,8 @@ import pytest
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
-from .conftest import BASE_URL, login
+from .conftest import ADMIN_GROUP, BASE_URL, login
+from .websocket_routes import WEBSOCKETS
 
 # Path parameters that name one specific record. A route carrying one must refuse B outright.
 ID_PARAMS = {"{vendor_id}", "{filament_id}", "{spool_id}", "{uid}", "{key_id}", "{user_id}"}
@@ -55,26 +56,35 @@ ALLOWED_CROSS_ACCOUNT_OK = {
     ("GET", "/tag/reader"),
 }
 
-# Routes holding no account data at all, or describing only the caller (and admin-only ones B lacks).
+# Routes holding no account data at all, or describing only the caller.
 PUBLIC_OR_SELF_ROUTES = {
     ("GET", "/info"),
     ("GET", "/health"),
-    ("POST", "/backup"),
     ("GET", "/external/filament"),
     ("GET", "/external/filament/search"),
     ("GET", "/external/material"),
     ("GET", "/me"),
-    ("POST", "/me/claim"),
     ("GET", "/keys"),
     ("POST", "/keys"),
+}
+
+# Instance-wide admin operations: a non-admin B must be refused; an admin B may run them but see none of A.
+ADMIN_ROUTES = {
+    ("POST", "/backup"),
+    ("POST", "/me/claim"),
     ("GET", "/admin/users"),
 }
 
 ACCOUNT_LOCAL = ALLOWED_CROSS_ACCOUNT_OK | PUBLIC_OR_SELF_ROUTES
 DENIED = {401, 403, 404}
+# An account-local route answering B with one of these was never exercised (the positive control).
+NOT_EXERCISED = {401, 403, 422}
 
-# Bodies whose validity the schema cannot express; without them the route answers 400 before it looks up A's record.
-BODIES = {("PUT", "/spool/{spool_id}/use"): {"use_weight": 1}}
+# Bodies the schema cannot express; without them the route refuses the input before it does any work.
+BODIES = {
+    ("PUT", "/spool/{spool_id}/use"): {"use_weight": 1},
+    ("POST", "/setting/{key}"): json.dumps([]),
+}
 METHODS = {"get", "post", "put", "patch", "delete"}
 
 # Long enough to absorb a slow container, short enough to fail rather than hang.
@@ -162,15 +172,28 @@ def b_key(b_session: httpx.Client) -> str:
     return created["key"]
 
 
-@pytest.fixture(scope="module", params=["key", "session"])
-def b(request: pytest.FixtureRequest, b_session: httpx.Client, b_key: str) -> httpx.Client:
-    """User B, once through a personal key and once through a browser session."""
-    if request.param == "session":
-        b_session.base_url = f"{BASE_URL}/api/v1"
-        yield b_session
-        return
-    with httpx.Client(base_url=f"{BASE_URL}/k/{b_key}/api/v1", timeout=30) as client:
-        yield client
+@pytest.fixture(scope="module", params=["key", "session", "admin"])
+def b(request: pytest.FixtureRequest, a: dict[str, Any], b_session: httpx.Client, b_key: str) -> httpx.Client:
+    """User B through a personal key, through a browser session, and as an admin (admins get no data access).
+
+    The admin is a user of its own: admin status comes from the last sign-in, so signing sweep-b in as
+    an admin would quietly turn the key and session variants into admin runs as well.
+    """
+    if request.param == "key":
+        client = httpx.Client(base_url=f"{BASE_URL}/k/{b_key}/api/v1", timeout=30)
+    elif request.param == "session":
+        client = b_session
+        client.base_url = f"{BASE_URL}/api/v1"
+    else:
+        client = login("sweep-b-admin", groups=[ADMIN_GROUP])
+        client.base_url = f"{BASE_URL}/api/v1"
+    me = client.get("/me")
+    assert me.status_code == 200, me.text
+    assert me.json()["id"] != a["params"]["{user_id}"]
+    assert me.json()["is_admin"] == (request.param == "admin")
+    yield client
+    if client is not b_session:
+        client.close()
 
 
 @pytest.fixture(scope="module")
@@ -208,7 +231,9 @@ def _sample(schema: dict[str, Any], spec: dict[str, Any], a: dict[str, Any], nam
     match schema.get("type"):
         case "object":
             props = schema.get("properties", {})
-            return {k: _sample(props[k], spec, a, k) for k in schema.get("required", [])}
+            # Optional fields that reference a record are sent too: B pointing its rows at A's must fail.
+            wanted = [k for k in props if k in schema.get("required", []) or k in by_name]
+            return {k: _sample(props[k], spec, a, k) for k in wanted}
         case "array":
             return []
         case "integer":
@@ -262,23 +287,51 @@ def test_every_route_classified(spec: dict[str, Any]):
         if not any(p in path for p in ID_PARAMS)
         and (method, path) not in ALLOWED_CROSS_ACCOUNT_OK
         and (method, path) not in PUBLIC_OR_SELF_ROUTES
+        and (method, path) not in ADMIN_ROUTES
     ]
     assert not unclassified, f"classify these routes in test_isolation_sweep.py: {unclassified}"
 
 
 def test_b_cannot_reach_a(a: dict[str, Any], b: httpx.Client, spec: dict[str, Any]):
     before = _snapshot(a)
+    is_admin = b.get("/me").json()["is_admin"]
     failures = []
     for method, path, op in _routes(spec):
+        # User management (disable, revoke) is the admin's job and is covered by the account API unit
+        # tests; it reaches no account data, and running it here would only lock A out.
+        if is_admin and path.startswith("/admin/"):
+            continue
         response = _request(b, method, path, op, spec, a)
         sent = str(response.request.url) + response.request.content.decode()
         leaked = [m for m in a["markers"] if m in response.text and m not in sent]
+        status, route = response.status_code, (method, path)
         if leaked:
-            failures.append(f"{method} {path}: {response.status_code} leaks {leaked}")
-        elif (method, path) not in ACCOUNT_LOCAL and response.status_code not in DENIED:
-            failures.append(f"{method} {path}: {response.status_code} {response.text[:200]}")
+            failures.append(f"{method} {path}: {status} leaks {leaked}")
+        elif route in ALLOWED_CROSS_ACCOUNT_OK:
+            if status in NOT_EXERCISED or status >= 500:
+                failures.append(f"{method} {path}: {status}, account-local route not exercised: {response.text[:200]}")
+        elif route not in ACCOUNT_LOCAL and not (route in ADMIN_ROUTES and is_admin) and status not in DENIED:
+            failures.append(f"{method} {path}: {status} {response.text[:200]}")
     assert not failures, "\n".join(failures)
     assert _snapshot(a) == before
+
+
+def test_b_cannot_point_at_a(a: dict[str, Any], b: httpx.Client):
+    """B re-pointing its own rows at A's records must be refused as if A's did not exist."""
+    before = _snapshot(a)
+    p = a["params"]
+    vendor = _ok(b.post("/vendor", json={"name": "b-vendor"}))
+    filament = _ok(b.post("/filament", json={"vendor_id": vendor["id"], "density": 1.24, "diameter": 1.75}))
+    spool = _ok(b.post("/spool", json={"filament_id": filament["id"]}))
+
+    assert b.patch(f"/filament/{filament['id']}", json={"vendor_id": p["{vendor_id}"]}).status_code == 404
+    assert b.patch(f"/spool/{spool['id']}", json={"filament_id": p["{filament_id}"]}).status_code == 404
+    assert _ok(b.get(f"/filament/{filament['id']}"))["vendor"]["id"] == vendor["id"]
+    assert _ok(b.get(f"/spool/{spool['id']}"))["filament"]["id"] == filament["id"]
+    assert _snapshot(a) == before
+
+    for path in (f"/spool/{spool['id']}", f"/filament/{filament['id']}", f"/vendor/{vendor['id']}"):
+        _ok(b.delete(path))
 
 
 def _ws_url(key: str, path: str) -> str:
@@ -298,22 +351,6 @@ def _trigger(a: dict[str, Any], kind: str, reader_id: str) -> None:
             _ok(api.post("/setting/currency", json=json.dumps(fresh[:3])))
         case "scan":
             _ok(api.post("/tag/scan", json={"uid": fresh.upper(), "reader_id": reader_id}))
-
-
-# Every websocket route in spoolman/api/v1 (websockets are not in the OpenAPI document).
-WEBSOCKETS = [
-    ("/", "vendor"),
-    ("/vendor", "vendor"),
-    ("/vendor/{vendor_id}", "vendor"),
-    ("/filament", "filament"),
-    ("/filament/{filament_id}", "filament"),
-    ("/spool", "spool"),
-    ("/spool/{spool_id}", "spool"),
-    ("/setting", "setting"),
-    ("/setting/{key}", "setting"),
-    ("/tag/scan", "scan"),
-    ("/tag/scan/{reader_id}", "scan"),
-]
 
 
 @pytest.mark.asyncio

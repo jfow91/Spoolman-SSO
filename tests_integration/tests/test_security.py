@@ -22,7 +22,7 @@ import pytest
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 
-from .conftest import BASE_URL, URL, login
+from .conftest import ADMIN_GROUP, BASE_URL, URL, login
 
 WS_URL = URL.replace("http://", "ws://", 1)
 
@@ -33,6 +33,8 @@ EVIL_ORIGIN = "https://evil.example"
 # The origin guard protects the browser session cookie, the only ambient credential; a personal key
 # in the URL is not something a foreign page can make the browser send, so it is exempt.
 SESSION = login("tester-a")
+# Backup is admin-only, so its origin test needs an admin for the 403 to come from the origin guard.
+ADMIN_SESSION = login("tester-admin", groups=[ADMIN_GROUP])
 
 
 def test_cross_origin_write_is_refused():
@@ -88,8 +90,9 @@ def test_cross_origin_delete_is_refused():
 
 def test_cross_origin_backup_is_refused():
     """A bodyless form post to /backup would otherwise rotate away every restore point."""
-    result = SESSION.post(f"{BASE_URL}/api/v1/backup", headers={"Origin": EVIL_ORIGIN})
+    result = ADMIN_SESSION.post(f"{BASE_URL}/api/v1/backup", headers={"Origin": EVIL_ORIGIN})
     assert result.status_code == 403
+    assert "does not trust" in result.json()["message"]  # the origin guard refused, not the admin check
 
 
 def test_forwarded_host_is_accepted():

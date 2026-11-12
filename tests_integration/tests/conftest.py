@@ -71,9 +71,9 @@ def login(sub: str, *, name: str | None = None, groups: list[str] | None = None)
     return client
 
 
-def make_key(sub: str, level: str = "edit") -> str:
+def make_key(sub: str, level: str = "edit", *, groups: list[str] | None = None) -> str:
     """Sign in as `sub` and mint a personal key at `level`; keys are session-only to create."""
-    client = login(sub)
+    client = login(sub, groups=groups)
     try:
         result = client.post(f"{BASE_URL}/api/v1/keys", json={"name": f"{sub}-{level}", "level": level})
     finally:
@@ -83,6 +83,7 @@ def make_key(sub: str, level: str = "edit") -> str:
 
 
 _wait_for_server()
+ADMIN_GROUP = "spoolman_admins"
 # Every pre-existing test addresses the server through this prefix, so it runs as user tester-a.
 URL = f"{BASE_URL}/k/{make_key('tester-a')}"
 

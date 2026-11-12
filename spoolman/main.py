@@ -16,6 +16,7 @@ from prometheus_client import generate_latest
 from scheduler.asyncio.scheduler import Scheduler
 
 from spoolman import env, externaldb, security, update_check
+from spoolman.access.principal import PrincipalMiddleware
 from spoolman.api.v1.router import app as v1_app
 from spoolman.auth import config as auth_config
 from spoolman.auth import routes as auth_routes
@@ -189,10 +190,12 @@ def add_cors_middleware() -> None:
     )
 
 
-# Order matters: middleware added last is outermost. CORS wraps both guards, so that a legitimate
-# cross-origin client can read the 403 body instead of an opaque CORS error, and the host guard
+# Order matters: middleware added last is outermost. CORS wraps the guards, so that a legitimate
+# cross-origin client can read the 401/403 body instead of an opaque CORS error, and the host guard
 # wraps the origin guard, because a rebound host makes the origin check agree with the attacker.
+# The principal sits between them: the origin guard needs to know whether a key or a session called.
 add_trusted_origin_middleware()
+app.add_middleware(PrincipalMiddleware)
 add_trusted_host_middleware()
 add_cors_middleware()
 

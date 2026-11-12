@@ -204,7 +204,7 @@ async def scan(
             # Values we refused to store must not reach the client either: report the tag as undecodable.
             decoded = None
 
-    scan_relay.register(reader_id, body.name, uid)
+    scan_relay.register(scope.account_id, reader_id, body.name, uid)
 
     result = TagScan(
         uid=uid,
@@ -226,8 +226,8 @@ async def scan(
         matched = (TARGET_FILAMENT, db_filament.id)
     else:
         matched = None
-    if scan_relay.should_broadcast(uid, reader_id, matched):
-        await _broadcast(result)
+    if scan_relay.should_broadcast(scope.account_id, uid, reader_id, matched):
+        await _broadcast(scope, result)
 
     content = jsonable_encoder(result, exclude_none=True)
     # exclude_none strips a null match, but "no match" is the answer to the device's question
@@ -283,11 +283,16 @@ def _decoded_response(decoded: tag_decode.DecodedTag | None) -> TagDecodedInfo |
     )
 
 
-async def _broadcast(result: TagScan) -> None:
-    """Broadcast a scan to the reader's pool, and to anyone following every reader."""
+def _pool(scope: Scope, *reader: str) -> tuple[str, ...]:
+    """Scan pools are namespaced by account, so a scan can only reach sockets of the scanner's account."""
+    return (str(scope.account_id), *reader)
+
+
+async def _broadcast(scope: Scope, result: TagScan) -> None:
+    """Broadcast a scan to the reader's pool in the scanner's account, and to that account's every-reader followers."""
     try:
         await scan_websocket_manager.send(
-            (result.reader_id,),
+            _pool(scope, result.reader_id),
             TagScanEvent(
                 type=EventType.SCANNED,
                 resource="tag_scan",
@@ -312,7 +317,7 @@ async def _broadcast(result: TagScan) -> None:
     ),
     response_model_exclude_none=True,
 )
-async def readers() -> list[TagReader]:
+async def readers(scope: Annotated[Scope, Depends(get_scope)]) -> list[TagReader]:
     return [
         TagReader(
             reader_id=reader.reader_id,
@@ -320,7 +325,7 @@ async def readers() -> list[TagReader]:
             last_seen=reader.last_seen,
             last_uid=reader.last_uid,
         )
-        for reader in scan_relay.readers()
+        for reader in scan_relay.readers(scope.account_id)
     ]
 
 
@@ -330,16 +335,17 @@ async def readers() -> list[TagReader]:
 )
 async def notify_any(
     websocket: WebSocket,
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
-    scan_websocket_manager.connect((), websocket)
+    scan_websocket_manager.connect(_pool(scope), websocket)
     try:
         while True:
             await asyncio.sleep(0.5)
             if await websocket.receive_text():
                 await websocket.send_json({"status": "healthy"})
     except WebSocketDisconnect:
-        scan_websocket_manager.disconnect((), websocket)
+        scan_websocket_manager.disconnect(_pool(scope), websocket)
 
 
 @router.websocket(
@@ -349,13 +355,14 @@ async def notify_any(
 async def notify(
     websocket: WebSocket,
     reader_id: str,
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
-    scan_websocket_manager.connect((reader_id,), websocket)
+    scan_websocket_manager.connect(_pool(scope, reader_id), websocket)
     try:
         while True:
             await asyncio.sleep(0.5)
             if await websocket.receive_text():
                 await websocket.send_json({"status": "healthy"})
     except WebSocketDisconnect:
-        scan_websocket_manager.disconnect((reader_id,), websocket)
+        scan_websocket_manager.disconnect(_pool(scope, reader_id), websocket)

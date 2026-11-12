@@ -41,9 +41,9 @@ logger = logging.getLogger(__name__)
 Target = models.Spool | models.Filament
 
 
-async def _get_tag_by_uid(db: AsyncSession, uid: str) -> models.Tag | None:
-    """Get the tag with this exact normalized UID, if any. Hits the unique index."""
-    stmt = sqlalchemy.select(models.Tag).where(models.Tag.uid == uid)
+async def _get_tag_by_uid(db: AsyncSession, scope: Scope, uid: str) -> models.Tag | None:
+    """Get the scope's tag with this exact normalized UID, if any. Hits the (owner_id, uid) unique index."""
+    stmt = owned(sqlalchemy.select(models.Tag).where(models.Tag.uid == uid), models.Tag, scope)
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
@@ -91,6 +91,7 @@ def _conflict(uid: str, existing: models.Tag) -> TagConflictError:
 
 async def _link(
     db: AsyncSession,
+    scope: Scope,
     target: Target,
     uid: str,
     tag_format: str | None,
@@ -106,7 +107,7 @@ async def _link(
     either way: flush raises the same error a commit would, and rolling back also undoes
     whatever else this transaction flushed earlier -- which is the point, for that caller.
     """
-    existing = await _get_tag_by_uid(db, uid)
+    existing = await _get_tag_by_uid(db, scope, uid)
     if existing is not None:
         if not _holds(existing, target):
             raise _conflict(uid, existing)
@@ -137,7 +138,7 @@ async def _link(
         # the loser. The database, not the read above, is what makes "one tag, one thing"
         # true; report the winner the same way a sequential conflict is reported.
         await db.rollback()
-        winner = await _get_tag_by_uid(db, uid)
+        winner = await _get_tag_by_uid(db, scope, uid)
         if winner is None:
             raise
         raise _conflict(uid, winner) from None
@@ -196,7 +197,7 @@ async def link_spool(
     """
     uid = normalize_uid(uid)
     tag_format = normalize_format(tag_format)
-    return await _link(db, await spool.get_by_id(db, scope, spool_id), uid, tag_format, commit=commit)
+    return await _link(db, scope, await spool.get_by_id(db, scope, spool_id), uid, tag_format, commit=commit)
 
 
 async def link_filament(
@@ -217,7 +218,7 @@ async def link_filament(
     """
     uid = normalize_uid(uid)
     tag_format = normalize_format(tag_format)
-    return await _link(db, await filament.get_by_id(db, scope, filament_id), uid, tag_format)
+    return await _link(db, scope, await filament.get_by_id(db, scope, filament_id), uid, tag_format)
 
 
 async def unlink_spool(*, db: AsyncSession, scope: Scope, spool_id: int, uid: str) -> None:
@@ -265,7 +266,7 @@ async def find_by_uid(db: AsyncSession, scope: Scope, uid: str) -> Target | None
         ValueError: If the UID is not valid.
 
     """
-    tag = await _get_tag_by_uid(db, normalize_uid(uid))
+    tag = await _get_tag_by_uid(db, scope, normalize_uid(uid))
     if tag is None:
         return None
     if tag.spool_id is not None:

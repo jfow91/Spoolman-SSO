@@ -3,8 +3,10 @@
 Runs as an outer ASGI middleware so no route, mount or websocket can be reached without passing it.
 """
 
+import logging
 import posixpath
 import re
+import secrets
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal
@@ -27,6 +29,26 @@ WS_CLOSE_UNAUTHENTICATED = 4401
 # Short-lived session for resolving the principal: commits (slid expiry, key last_used), rolls back on
 # error. Module-level so tests can point it at their own engine.
 db_session = asynccontextmanager(get_db_session)
+
+_KEY_IN_PATH = re.compile(r"/k/[^/?#\s]+")
+
+
+class RedactKeyFilter(logging.Filter):
+    """Replace ``/k/<key>`` in log records, so the key transport never writes a key to the logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Redact in the message and in its arguments (uvicorn's access formatter unpacks the args)."""
+        if isinstance(record.msg, str):
+            record.msg = _KEY_IN_PATH.sub("/k/<redacted>", record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(_KEY_IN_PATH.sub("/k/<redacted>", a) if isinstance(a, str) else a for a in record.args)
+        return True
+
+
+# Installed at import (main.py imports this module), so it covers uvicorn as entrypoint.sh launches it.
+# The host guard logs the original path and sits outside this middleware.
+for _name in ("uvicorn.access", "spoolman.security"):
+    logging.getLogger(_name).addFilter(RedactKeyFilter())
 
 _PUBLIC_EXACT = frozenset(
     {
@@ -93,7 +115,7 @@ class PrincipalMiddleware:
         """Wrap the given ASGI application."""
         self.app = app
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:  # noqa: C901
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:  # noqa: C901, PLR0911
         """Resolve the principal, then pass through, refuse, or redirect to sign-in."""
         if scope["type"] not in {"http", "websocket"}:
             await self.app(scope, receive, send)
@@ -108,6 +130,9 @@ class PrincipalMiddleware:
 
         conn = HTTPConnection(scope)
         prefix_key = under_base and rel.startswith("/k/")
+        if under_base and not prefix_key and all(p == "/metrics" for p in _forms(rel)):
+            await _metrics_gate(cfg.metrics_token, conn, scope, receive, send, self.app)
+            return
         if prefix_key:
             raw_key, _, rest = rel[3:].partition("/")
             rel = "/" + rest
@@ -115,11 +140,11 @@ class PrincipalMiddleware:
             raw_key = _header_key(conn)
         principal, slid_token = await _resolve(conn, raw_key)
 
-        if raw_key is not None:
+        if raw_key is not None and principal is None:
             # A presented key that fails never falls back to the cookie.
-            if principal is None:
-                await _refuse(scope, receive, send, 401, WS_CLOSE_UNAUTHENTICATED)
-                return
+            await _refuse(scope, receive, send, 401, WS_CLOSE_UNAUTHENTICATED)
+            return
+        if raw_key is not None:
             if not _key_may_reach(rel):
                 await _refuse(scope, receive, send, 403, WS_CLOSE_FORBIDDEN)
                 return
@@ -152,6 +177,21 @@ class PrincipalMiddleware:
         await self.app(scope, receive, send)
 
 
+async def _metrics_gate(
+    token: str | None, conn: HTTPConnection, scope: Scope, receive: Receive, send: Send, app: ASGIApp
+) -> None:
+    """Serve /metrics only to the scraper's dedicated bearer token; sessions and keys never reach it."""
+    if token is None:
+        await JSONResponse({"message": "Not Found"}, 404)(scope, receive, send)
+        return
+    auth = conn.headers.get("authorization", "")
+    presented = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if scope["type"] != "http" or not secrets.compare_digest(presented.encode(), token.encode()):
+        await _refuse(scope, receive, send, 401, WS_CLOSE_UNAUTHENTICATED)
+        return
+    await app({**scope, "state": {**scope.get("state", {}), "principal": None}}, receive, send)
+
+
 def _header_key(conn: HTTPConnection) -> str | None:
     """Return the key from ``Authorization: Bearer`` or ``X-Api-Key``, or None if neither was sent."""
     auth = conn.headers.get("authorization", "")
@@ -179,8 +219,10 @@ async def _resolve(conn: HTTPConnection, raw_key: str | None) -> tuple[Principal
 
 async def _refuse(scope: Scope, receive: Receive, send: Send, status: int, ws_code: int) -> None:
     if scope["type"] == "websocket":
-        # The ASGI server expects the connect message to be consumed before a close is sent.
+        # Accept first: a close before accept makes the server answer the handshake with a bare HTTP 403,
+        # so the client would never see the code.
         await receive()
+        await send({"type": "websocket.accept"})
         await send({"type": "websocket.close", "code": ws_code})
         return
     message = "Not signed in" if status == 401 else "Forbidden"  # noqa: PLR2004

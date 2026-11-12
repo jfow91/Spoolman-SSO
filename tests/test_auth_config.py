@@ -22,7 +22,14 @@ DISCOVERY = {
 
 @pytest.fixture
 def full_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for v in [*REQUIRED, "SPOOLMAN_OIDC_CLIENT_SECRET_FILE", "SPOOLMAN_SESSION_SECRET_FILE", "SPOOLMAN_BASE_PATH"]:
+    for v in [
+        *REQUIRED,
+        "SPOOLMAN_OIDC_CLIENT_SECRET_FILE",
+        "SPOOLMAN_SESSION_SECRET_FILE",
+        "SPOOLMAN_BASE_PATH",
+        "SPOOLMAN_METRICS_TOKEN",
+        "SPOOLMAN_METRICS_TOKEN_FILE",
+    ]:
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("SPOOLMAN_OIDC_ISSUER", "http://fake-oidc")
     monkeypatch.setenv("SPOOLMAN_OIDC_CLIENT_ID", "cid")
@@ -44,6 +51,17 @@ def test_short_session_secret_rejected(full_env: None, monkeypatch: pytest.Monke
     monkeypatch.setenv("SPOOLMAN_SESSION_SECRET", "x" * 31)
     with pytest.raises(AuthConfigError, match="32"):
         load_oidc_config()
+
+
+def test_metrics_token_optional_and_min_32(full_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # noqa: ANN001
+    assert load_oidc_config().metrics_token is None
+    monkeypatch.setenv("SPOOLMAN_METRICS_TOKEN", "m" * 31)
+    with pytest.raises(AuthConfigError, match="SPOOLMAN_METRICS_TOKEN must be at least 32"):
+        load_oidc_config()
+    f = tmp_path / "metrics"
+    f.write_text("f" * 32 + "\n")
+    monkeypatch.setenv("SPOOLMAN_METRICS_TOKEN_FILE", str(f))
+    assert load_oidc_config().metrics_token == "f" * 32
 
 
 def test_secret_file_variant(full_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # noqa: ANN001

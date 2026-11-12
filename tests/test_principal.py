@@ -1,5 +1,6 @@
 """Tests for the principal middleware: who is calling (session cookie or key), and sign-in enforcement."""
 
+import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -56,6 +57,11 @@ def _app(base: str) -> FastAPI:
 
     app = FastAPI()
     app.mount(base + "/api/v1", api)
+
+    @app.get(base + "/metrics")
+    async def _metrics() -> PlainTextResponse:
+        return PlainTextResponse("metrics")
+
     app.mount(base, _spa)
     # Same order as main.py: the principal middleware wraps the origin guard.
     app.add_middleware(security.TrustedOriginMiddleware)
@@ -79,9 +85,18 @@ async def setup(db: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> AsyncGener
     monkeypatch.setattr(access, "db_session", _session)
     clients: list[httpx.AsyncClient] = []
 
-    async def factory(base: str = "") -> httpx.AsyncClient:
+    async def factory(base: str = "", metrics_token: str | None = None) -> httpx.AsyncClient:
         cfg = OidcConfig(
-            "i", "c", "s", HOST, base, b"s" * 32, "admins", HOST + base + "/auth/callback", cookie_secure=False
+            "i",
+            "c",
+            "s",
+            HOST,
+            base,
+            b"s" * 32,
+            "admins",
+            HOST + base + "/auth/callback",
+            cookie_secure=False,
+            metrics_token=metrics_token,
         )
         monkeypatch.setattr(config, "_auth", (cfg, OidcProvider("a", "t", "j", None, "i")))
         client = httpx.AsyncClient(transport=httpx.ASGITransport(app=_app(base)), base_url=HOST)
@@ -93,8 +108,8 @@ async def setup(db: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> AsyncGener
         await c.aclose()
 
 
-async def _user_with_key(db: AsyncSession, level: str = "edit") -> tuple[models.User, str]:
-    user = await make_user(db)
+async def _user_with_key(db: AsyncSession, level: str = "edit", admin: bool = False) -> tuple[models.User, str]:  # noqa: FBT001, FBT002
+    user = await make_user(db, admin=admin)
     _, raw = await keys.create_key(db, user.id, "printer", level)  # type: ignore[arg-type]
     await db.commit()
     return user, raw
@@ -179,7 +194,7 @@ async def test_no_auth_page_redirects_with_base_path(setup: Setup) -> None:
 async def test_no_auth_ws_closed_4401(setup: Setup) -> None:
     client = await setup()
     sent = await _ws(client, "/api/v1/")
-    assert sent == [{"type": "websocket.close", "code": 4401}]
+    assert sent == [{"type": "websocket.accept"}, {"type": "websocket.close", "code": 4401}]
 
 
 @pytest.mark.asyncio
@@ -328,7 +343,7 @@ async def test_key_cannot_open_ws_outside_api(setup: Setup, db: AsyncSession) ->
     client = await setup()
     _, raw = await _user_with_key(db)
     sent = await _ws(client, f"/k/{raw}/socket")
-    assert sent == [{"type": "websocket.close", "code": 4403}]
+    assert sent == [{"type": "websocket.accept"}, {"type": "websocket.close", "code": 4403}]
 
 
 @pytest.mark.asyncio
@@ -345,7 +360,7 @@ async def test_bad_key_401_not_fallthrough_to_cookie(setup: Setup, db: AsyncSess
         r = await client.get(path, headers={"cookie": cookie, **headers})
         assert r.status_code == 401, path
     sent = await _ws(client, "/k/bogus/api/v1/", {"cookie": cookie})
-    assert sent == [{"type": "websocket.close", "code": 4401}]
+    assert sent == [{"type": "websocket.accept"}, {"type": "websocket.close", "code": 4401}]
 
 
 @pytest.mark.asyncio
@@ -377,3 +392,57 @@ async def test_csrf_not_applied_to_key_post(setup: Setup, db: AsyncSession) -> N
     _, raw = await _user_with_key(db)
     r = await client.post("/api/v1/echo", headers={"x-api-key": raw, "origin": "https://evil.example"})
     assert r.status_code == 200
+
+
+# --- /metrics -----------------------------------------------------------------------------------
+
+METRICS_TOKEN = "m" * 40
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("base", ["", "/spoolman"])
+async def test_metrics_token_200(setup: Setup, base: str) -> None:
+    client = await setup(base, metrics_token=METRICS_TOKEN)
+    r = await client.get(base + "/metrics", headers={"authorization": f"Bearer {METRICS_TOKEN}"})
+    assert (r.status_code, r.text) == (200, "metrics")
+
+
+@pytest.mark.asyncio
+async def test_metrics_wrong_or_missing_token_401(setup: Setup) -> None:
+    client = await setup(metrics_token=METRICS_TOKEN)
+    for headers in [{}, {"authorization": "Bearer " + "x" * 40}, {"x-api-key": METRICS_TOKEN}]:
+        r = await client.get("/metrics", headers=headers)
+        assert (r.status_code, r.json()) == (401, {"message": "Not signed in"}), headers
+
+
+@pytest.mark.asyncio
+async def test_metrics_session_or_key_alone_401(setup: Setup, db: AsyncSession) -> None:
+    client = await setup(metrics_token=METRICS_TOKEN)
+    user, raw = await _user_with_key(db, admin=True)
+    token = await _session_cookie(db, user)
+    assert (await client.get("/metrics", headers={"cookie": f"spoolman_session={token}"})).status_code == 401
+    assert (await client.get("/metrics", headers={"authorization": f"Bearer {raw}"})).status_code == 401
+    assert (await client.get(f"/k/{raw}/metrics")).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_metrics_disabled_without_token_404(setup: Setup) -> None:
+    client = await setup()
+    r = await client.get("/metrics", headers={"authorization": f"Bearer {METRICS_TOKEN}"})
+    assert r.status_code == 404
+
+
+# --- logs ---------------------------------------------------------------------------------------
+
+
+def test_key_in_path_is_redacted_from_logs(caplog: pytest.LogCaptureFixture) -> None:
+    key = "A" * 43
+    with caplog.at_level(logging.INFO):
+        # The shape uvicorn's access logger uses: the path is an argument, not part of the format.
+        logging.getLogger("uvicorn.access").info(
+            '%s - "%s %s HTTP/%s" %d', "1.2.3.4:5", "GET", f"/spoolman/k/{key}/api/v1/spool?x=1", "1.1", 200
+        )
+        logging.getLogger("spoolman.security").warning("Refused. path: %r", f"/k/{key}/api/v1/spool")
+    assert key not in caplog.text
+    assert "/spoolman/k/<redacted>/api/v1/spool?x=1" in caplog.text
+    assert "/k/<redacted>/api/v1/spool" in caplog.text

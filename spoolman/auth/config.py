@@ -14,6 +14,7 @@ from spoolman import env
 logger = logging.getLogger(__name__)
 
 MIN_SESSION_SECRET_BYTES = 32
+MIN_METRICS_TOKEN_CHARS = 32
 
 
 class AuthConfigError(Exception):
@@ -33,6 +34,8 @@ class OidcConfig:
     admin_group: str
     redirect_uri: str
     cookie_secure: bool
+    # Bearer token for the Prometheus scraper; None disables /metrics.
+    metrics_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,9 @@ def load_oidc_config() -> OidcConfig:
     secret = values["SPOOLMAN_SESSION_SECRET"]
     if secret and len(secret.encode()) < MIN_SESSION_SECRET_BYTES:
         problems.append(f"SPOOLMAN_SESSION_SECRET must be at least {MIN_SESSION_SECRET_BYTES} bytes")
+    metrics_token = _read("SPOOLMAN_METRICS_TOKEN", file_variant=True)
+    if metrics_token and len(metrics_token) < MIN_METRICS_TOKEN_CHARS:
+        problems.append(f"SPOOLMAN_METRICS_TOKEN must be at least {MIN_METRICS_TOKEN_CHARS} characters")
     if problems:
         raise AuthConfigError("Invalid auth configuration: " + "; ".join(problems))
 
@@ -85,6 +91,7 @@ def load_oidc_config() -> OidcConfig:
         redirect_uri=f"{public_url}{base_path}/auth/callback",
         # Only plain-http deployments (e.g. LAN testing) get a non-Secure cookie.
         cookie_secure=not public_url.lower().startswith("http://"),
+        metrics_token=metrics_token or None,
     )
 
 

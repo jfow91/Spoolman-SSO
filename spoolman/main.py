@@ -18,6 +18,7 @@ from scheduler.asyncio.scheduler import Scheduler
 from spoolman import env, externaldb, security, update_check
 from spoolman.api.v1.router import app as v1_app
 from spoolman.auth import config as auth_config
+from spoolman.auth import routes as auth_routes
 from spoolman.client import SinglePageApplication, render_config_js
 from spoolman.database import database
 from spoolman.prometheus.metrics import registry
@@ -92,6 +93,10 @@ if base_path != "":
 def get_configjs() -> Response:
     """Return a dynamic js config file."""
     return Response(content=render_config_js(base_path), media_type="text/javascript")
+
+
+# Before the client mount below, which would otherwise swallow <base_path>/auth/*.
+app.include_router(auth_routes.router, prefix=base_path + "/auth")
 
 
 # Mount the client side app. The new Svelte client is served by default; set

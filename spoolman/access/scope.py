@@ -4,12 +4,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends
 from sqlalchemy import Select
 
 from spoolman.access.principal import Principal, get_principal
 from spoolman.database.models import Base
-from spoolman.exceptions import ItemNotFoundError
+from spoolman.exceptions import AccessDeniedError, ItemNotFoundError
 
 
 class Level(IntEnum):
@@ -45,7 +45,7 @@ def require_level(min_level: Level) -> Callable[..., Scope]:
 
     def dependency(scope: Scope = Depends(get_scope)) -> Scope:  # noqa: B008
         if scope.level < min_level:
-            raise HTTPException(403, detail={"message": "View only"})
+            raise AccessDeniedError("View only")
         return scope
 
     return dependency

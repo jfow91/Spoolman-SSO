@@ -12,7 +12,7 @@ from starlette.responses import Response
 
 from spoolman import env, update_check
 from spoolman.database.database import backup_global_db
-from spoolman.exceptions import ItemNotFoundError
+from spoolman.exceptions import AccessDeniedError, ItemNotFoundError
 from spoolman.externaldb import get_external_db_name
 from spoolman.ws import websocket_manager
 
@@ -42,6 +42,11 @@ async def itemnotfounderror_exception_handler(_request: Request, exc: ItemNotFou
         status_code=404,
         content={"message": exc.args[0]},
     )
+
+
+@app.exception_handler(AccessDeniedError)
+async def accessdeniederror_exception_handler(_request: Request, exc: AccessDeniedError) -> Response:
+    return JSONResponse(status_code=403, content={"message": exc.args[0]})
 
 
 # Add a general info endpoint

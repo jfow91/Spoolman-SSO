@@ -1,14 +1,16 @@
 from datetime import datetime
 
 import pytest
-from fastapi import HTTPException
+from fastapi import Depends, FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from spoolman.access.principal import Principal
+from spoolman.access.principal import Principal, get_principal
 from spoolman.access.scope import Level, ensure_same_account, get_scope, owned, require_level, scope_for_user
 from spoolman.database.models import Vendor
-from spoolman.exceptions import ItemNotFoundError
+from spoolman.exceptions import AccessDeniedError, ItemNotFoundError
+from spoolman.api.v1.router import accessdeniederror_exception_handler
 from tests.support.dbsession import make_user
 
 
@@ -38,10 +40,8 @@ def test_key_scope_levels() -> None:
 
 def test_require_level_blocks_view_key_on_write() -> None:
     view = get_scope(Principal(1, "x", False, "key", "view"))
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(AccessDeniedError, match="View only"):
         require_level(Level.EDIT)(view)
-    assert exc.value.status_code == 403
-    assert exc.value.detail == {"message": "View only"}
     assert require_level(Level.VIEW)(view) is view
     assert require_level(Level.EDIT)(scope_for_user(1)).level == Level.OWNER
 
@@ -51,3 +51,17 @@ def test_ensure_same_account_raises_not_found() -> None:
     ensure_same_account(scope, _vendor(1, "ok"), None)
     with pytest.raises(ItemNotFoundError):
         ensure_same_account(scope, _vendor(1, "ok"), _vendor(2, "other"))
+
+
+def test_view_key_gets_403_message_body() -> None:
+    app = FastAPI()
+    app.add_exception_handler(AccessDeniedError, accessdeniederror_exception_handler)
+    app.dependency_overrides[get_principal] = lambda: Principal(1, "x", is_admin=False, via="key", key_level="view")
+
+    @app.post("/w")
+    def write(_scope=Depends(require_level(Level.EDIT))) -> dict:  # noqa: B008
+        return {}
+
+    r = TestClient(app).post("/w")
+    assert r.status_code == 403
+    assert r.json() == {"message": "View only"}

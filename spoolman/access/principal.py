@@ -47,7 +47,8 @@ class RedactKeyFilter(logging.Filter):
 
 # Installed at import (main.py imports this module), so it covers uvicorn as entrypoint.sh launches it.
 # The host guard logs the original path and sits outside this middleware.
-for _name in ("uvicorn.access", "spoolman.security"):
+# uvicorn.error carries the websocket handshake lines ("WebSocket <path>" [accepted]).
+for _name in ("uvicorn.access", "uvicorn.error", "spoolman.security"):
     logging.getLogger(_name).addFilter(RedactKeyFilter())
 
 _PUBLIC_EXACT = frozenset(

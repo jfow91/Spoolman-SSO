@@ -443,6 +443,8 @@ def test_key_in_path_is_redacted_from_logs(caplog: pytest.LogCaptureFixture) -> 
             '%s - "%s %s HTTP/%s" %d', "1.2.3.4:5", "GET", f"/spoolman/k/{key}/api/v1/spool?x=1", "1.1", 200
         )
         logging.getLogger("spoolman.security").warning("Refused. path: %r", f"/k/{key}/api/v1/spool")
+        logging.getLogger("uvicorn.error").info('%s - "WebSocket %s" [accepted]', "1.2.3.4:5", f"/k/{key}/api/v1/")
     assert key not in caplog.text
     assert "/spoolman/k/<redacted>/api/v1/spool?x=1" in caplog.text
     assert "/k/<redacted>/api/v1/spool" in caplog.text
+    assert '"WebSocket /k/<redacted>/api/v1/" [accepted]' in caplog.text

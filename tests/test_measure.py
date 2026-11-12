@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from spoolman.access.scope import scope_for_user
 from spoolman.database import models, spool
 from tests.support.dbsession import make_user
 
@@ -43,7 +44,7 @@ async def test_measure_tare(spool_weight: float | None, expected_used: float) ->
 
     # A fresh session, as each API request gets.
     async with AsyncSession(engine, expire_on_commit=False) as db:
-        result = await spool.measure(db, item.id, 400)
+        result = await spool.measure(db, scope_for_user(owner), item.id, 400)
         assert result.used_weight == pytest.approx(expected_used)
 
     await engine.dispose()

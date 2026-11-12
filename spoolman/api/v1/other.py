@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, RootModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from spoolman.access.scope import Scope, get_scope
+from spoolman.access.scope import Level, Scope, get_scope, require_level
 from spoolman.database import filament, spool
 from spoolman.database.database import get_db_session
 
@@ -98,8 +98,9 @@ async def find_article_numbers(
 async def find_lot_numbers(
     *,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> list[str]:
-    return await spool.find_lot_numbers(db=db)
+    return await spool.find_lot_numbers(db=db, scope=scope)
 
 
 @router.get(
@@ -125,8 +126,9 @@ async def find_lot_numbers(
 async def find_locations(
     *,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> list[str]:
-    return await spool.find_locations(db=db)
+    return await spool.find_locations(db=db, scope=scope)
 
 
 class RenameLocationBody(BaseModel):
@@ -144,8 +146,9 @@ async def rename_location(
     location: str,
     *,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     body: RenameLocationBody,
 ) -> str:
     logger.info("Renaming location %s to %s", location, body.name)
-    await spool.rename_location(db=db, current_name=location, new_name=body.name)
+    await spool.rename_location(db=db, scope=scope, current_name=location, new_name=body.name)
     return body.name

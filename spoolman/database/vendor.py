@@ -94,6 +94,7 @@ async def find(
 
     stmt = await apply_extra_field_filters_and_sort(
         db=db,
+        scope=scope,
         stmt=stmt,
         base_obj=models.Vendor,
         entity_type=EntityType.vendor,
@@ -160,10 +161,13 @@ async def delete(db: AsyncSession, scope: Scope, vendor_id: int) -> None:
     await vendor_changed(vendor, EventType.DELETED)
 
 
-async def clear_extra_field(db: AsyncSession, key: str) -> None:
-    """Delete all extra fields with a specific key."""
+async def clear_extra_field(db: AsyncSession, scope: Scope, key: str) -> None:
+    """Delete the account's extra field values with a specific key."""
     await db.execute(
-        sqlalchemy.delete(models.VendorField).where(models.VendorField.key == key),
+        sqlalchemy.delete(models.VendorField).where(
+            models.VendorField.key == key,
+            models.VendorField.vendor_id.in_(owned(select(models.Vendor.id), models.Vendor, scope)),
+        ),
     )
     await db.commit()
 

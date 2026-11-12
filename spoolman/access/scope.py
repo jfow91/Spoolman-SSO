@@ -3,9 +3,10 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import TypeVar
 
 from fastapi import Depends
-from sqlalchemy import Select
+from sqlalchemy import Delete, Select, Update
 
 from spoolman.access.principal import Principal, get_principal
 from spoolman.database.models import Base
@@ -51,7 +52,10 @@ def require_level(min_level: Level) -> Callable[..., Scope]:
     return dependency
 
 
-def owned(stmt: Select, model: type[Base], scope: Scope) -> Select:
+_Stmt = TypeVar("_Stmt", Select, Update, Delete)
+
+
+def owned(stmt: _Stmt, model: type[Base], scope: Scope) -> _Stmt:
     return stmt.where(model.owner_id == scope.account_id)  # type: ignore[attr-defined]
 
 

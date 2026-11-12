@@ -482,7 +482,7 @@ async def create(  # noqa: ANN201
     body: FilamentParameters,
 ):
     if body.extra:
-        all_fields = await get_extra_fields(db, EntityType.filament)
+        all_fields = await get_extra_fields(db, scope, EntityType.filament)
         try:
             validate_extra_field_dict(all_fields, body.extra)
         except ValueError as e:
@@ -536,7 +536,7 @@ async def update(  # noqa: ANN201
     patch_data = body.model_dump(exclude_unset=True)
 
     if body.extra:
-        all_fields = await get_extra_fields(db, EntityType.filament)
+        all_fields = await get_extra_fields(db, scope, EntityType.filament)
         try:
             validate_extra_field_dict(all_fields, body.extra)
         except ValueError as e:

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import QueryParams
 
-from spoolman.access.scope import Level, Scope, require_level
+from spoolman.access.scope import Level, Scope, get_scope, require_level
 from spoolman.api.v1.models import (
     Filament,
     Message,
@@ -199,6 +199,7 @@ async def find(
     *,
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     filament_name_old: Annotated[
         str | None,
         Query(alias="filament_name", title="Filament Name", description="See filament.name.", deprecated=True),
@@ -392,6 +393,7 @@ async def find(
     try:
         db_items, total_count = await spool.find(
             db=db,
+            scope=scope,
             filament_name=filament_name if filament_name is not None else filament_name_old,
             filament_id=filament_ids,
             filament_material=filament_material if filament_material is not None else filament_material_old,
@@ -431,6 +433,7 @@ async def find(
 )
 async def notify_any(
     websocket: WebSocket,
+    _scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
     websocket_manager.connect(("spool",), websocket)
@@ -465,6 +468,7 @@ async def find_groups(
     *,
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     group_by: Annotated[
         str,
         Query(
@@ -613,6 +617,7 @@ async def find_groups(
     try:
         page = await spool.find_groups(
             db=db,
+            scope=scope,
             group_by=group_by,
             filament_name=filament_name,
             filament_id=filament_ids,
@@ -690,6 +695,7 @@ class RenameFieldValueResult(BaseModel):
 async def rename_field_value(
     *,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     field: Annotated[
         str,
         Path(
@@ -708,6 +714,7 @@ async def rename_field_value(
     try:
         updated = await spool.rename_field_value(
             db=db,
+            scope=scope,
             field=field,
             value=body.value,
             new_value=body.new_value,
@@ -729,9 +736,10 @@ async def rename_field_value(
 )
 async def get(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     spool_id: int,
 ) -> Spool:
-    db_item = await spool.get_by_id(db, spool_id)
+    db_item = await spool.get_by_id(db, scope, spool_id)
     return Spool.from_db(db_item)
 
 
@@ -741,6 +749,7 @@ async def get(
 )
 async def notify(
     websocket: WebSocket,
+    _scope: Annotated[Scope, Depends(get_scope)],
     spool_id: int,
 ) -> None:
     await websocket.accept()
@@ -780,7 +789,7 @@ async def create(  # noqa: ANN201
         )
 
     if body.extra:
-        all_fields = await get_extra_fields(db, EntityType.spool)
+        all_fields = await get_extra_fields(db, scope, EntityType.spool)
         try:
             validate_extra_field_dict(all_fields, body.extra)
         except ValueError as e:
@@ -844,7 +853,7 @@ async def update(  # noqa: ANN201
         )
 
     if body.extra:
-        all_fields = await get_extra_fields(db, EntityType.spool)
+        all_fields = await get_extra_fields(db, scope, EntityType.spool)
         try:
             validate_extra_field_dict(all_fields, body.extra)
         except ValueError as e:
@@ -875,9 +884,10 @@ async def update(  # noqa: ANN201
 )
 async def delete(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     spool_id: int,
 ) -> Message:
-    await spool.delete(db, spool_id)
+    await spool.delete(db, scope, spool_id)
     return Message(message="Success!")
 
 
@@ -902,11 +912,12 @@ async def delete(
 )
 async def link_tag(  # noqa: ANN201
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     spool_id: int,
     body: TagLinkParameters,
 ):
     try:
-        db_item = await tag_db.link_spool(db=db, spool_id=spool_id, uid=body.uid, tag_format=body.format)
+        db_item = await tag_db.link_spool(db=db, scope=scope, spool_id=spool_id, uid=body.uid, tag_format=body.format)
     except ValueError as e:
         return JSONResponse(status_code=400, content=Message(message=str(e)).dict())
     except TagConflictError as e:
@@ -930,6 +941,7 @@ async def link_tag(  # noqa: ANN201
 )
 async def unlink_tag(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     spool_id: int,
     uid: Annotated[
         str,
@@ -941,7 +953,7 @@ async def unlink_tag(
     ],
 ) -> Response:
     try:
-        await tag_db.unlink_spool(db=db, spool_id=spool_id, uid=uid)
+        await tag_db.unlink_spool(db=db, scope=scope, spool_id=spool_id, uid=uid)
     except ValueError as e:
         return JSONResponse(status_code=400, content=Message(message=str(e)).dict())
     return Response(status_code=204)
@@ -962,6 +974,7 @@ async def unlink_tag(
 )
 async def use(  # noqa: ANN201
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     spool_id: int,
     body: SpoolUseParameters,
 ):
@@ -972,11 +985,11 @@ async def use(  # noqa: ANN201
         )
 
     if body.use_weight is not None:
-        db_item = await spool.use_weight(db, spool_id, body.use_weight)
+        db_item = await spool.use_weight(db, scope, spool_id, body.use_weight)
         return Spool.from_db(db_item)
 
     if body.use_length is not None:
-        db_item = await spool.use_length(db, spool_id, body.use_length)
+        db_item = await spool.use_length(db, scope, spool_id, body.use_length)
         return Spool.from_db(db_item)
 
     return JSONResponse(
@@ -998,11 +1011,12 @@ async def use(  # noqa: ANN201
 )
 async def measure(  # noqa: ANN201
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     spool_id: int,
     body: SpoolMeasureParameters,
 ):
     try:
-        db_item = await spool.measure(db, spool_id, body.weight)
+        db_item = await spool.measure(db, scope, spool_id, body.weight)
         return Spool.from_db(db_item)
     except SpoolMeasureError as e:
         logger.exception("Failed to update spool measurement.")

@@ -165,6 +165,7 @@ async def _unlink(db: AsyncSession, target: Target, uid: str) -> None:
 async def link_spool(
     *,
     db: AsyncSession,
+    scope: Scope,
     spool_id: int,
     uid: str,
     tag_format: str | None = None,
@@ -178,6 +179,7 @@ async def link_spool(
 
     Args:
         db: Database session.
+        scope: The account the spool must belong to.
         spool_id: The spool to link the tag to.
         uid: The tag UID in any shape; normalized here.
         tag_format: Optional tag format name, e.g. "ntag".
@@ -194,7 +196,7 @@ async def link_spool(
     """
     uid = normalize_uid(uid)
     tag_format = normalize_format(tag_format)
-    return await _link(db, await spool.get_by_id(db, spool_id), uid, tag_format, commit=commit)
+    return await _link(db, await spool.get_by_id(db, scope, spool_id), uid, tag_format, commit=commit)
 
 
 async def link_filament(
@@ -218,11 +220,12 @@ async def link_filament(
     return await _link(db, await filament.get_by_id(db, scope, filament_id), uid, tag_format)
 
 
-async def unlink_spool(*, db: AsyncSession, spool_id: int, uid: str) -> None:
+async def unlink_spool(*, db: AsyncSession, scope: Scope, spool_id: int, uid: str) -> None:
     """Unlink a tag from a spool.
 
     Args:
         db: Database session.
+        scope: The account the spool must belong to.
         spool_id: The spool the tag is linked to.
         uid: The tag UID in any shape; normalized here.
 
@@ -232,7 +235,7 @@ async def unlink_spool(*, db: AsyncSession, spool_id: int, uid: str) -> None:
 
     """
     uid = normalize_uid(uid)
-    await _unlink(db, await spool.get_by_id(db, spool_id), uid)
+    await _unlink(db, await spool.get_by_id(db, scope, spool_id), uid)
 
 
 async def unlink_filament(*, db: AsyncSession, scope: Scope, filament_id: int, uid: str) -> None:
@@ -266,7 +269,7 @@ async def find_by_uid(db: AsyncSession, scope: Scope, uid: str) -> Target | None
     if tag is None:
         return None
     if tag.spool_id is not None:
-        return await spool.get_by_id(db, tag.spool_id)
+        return await spool.get_by_id(db, scope, tag.spool_id)
     if tag.filament_id is not None:
         return await filament.get_by_id(db, scope, tag.filament_id)
     # A kind addressed by value (a location) resolves to no row, and nothing reads those yet.
@@ -487,7 +490,7 @@ async def create_spool_from_decoded_tag(
             commit=False,
         )
 
-        await link_spool(db=db, spool_id=spool_item.id, uid=uid, tag_format=tag_format, commit=False)
+        await link_spool(db=db, scope=scope, spool_id=spool_item.id, uid=uid, tag_format=tag_format, commit=False)
         await db.commit()
     except BaseException:
         await db.rollback()

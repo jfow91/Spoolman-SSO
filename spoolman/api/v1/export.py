@@ -34,13 +34,14 @@ class ExportFormat(Enum):
 async def export_spools(
     *,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     fmt: ExportFormat,
     allow_archived: Annotated[
         bool,
         Query(description="Whether to include archived spools in the export."),
     ] = False,
 ) -> Response:
-    all_spools, _ = await spool.find(db=db, allow_archived=allow_archived)
+    all_spools, _ = await spool.find(db=db, scope=scope, allow_archived=allow_archived)
     return await _export(all_spools, fmt, "spools")
 
 

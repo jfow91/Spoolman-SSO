@@ -163,6 +163,7 @@ async def find(
 
     stmt = await apply_extra_field_filters_and_sort(
         db=db,
+        scope=scope,
         stmt=stmt,
         base_obj=models.Filament,
         entity_type=EntityType.filament,
@@ -253,10 +254,13 @@ async def delete(db: AsyncSession, scope: Scope, filament_id: int) -> None:
         raise ItemDeleteError("Failed to delete filament.") from exc
 
 
-async def clear_extra_field(db: AsyncSession, key: str) -> None:
-    """Delete all extra fields with a specific key."""
+async def clear_extra_field(db: AsyncSession, scope: Scope, key: str) -> None:
+    """Delete the account's extra field values with a specific key."""
     await db.execute(
-        sqlalchemy.delete(models.FilamentField).where(models.FilamentField.key == key),
+        sqlalchemy.delete(models.FilamentField).where(
+            models.FilamentField.key == key,
+            models.FilamentField.filament_id.in_(owned(select(models.Filament.id), models.Filament, scope)),
+        ),
     )
     await db.commit()
 

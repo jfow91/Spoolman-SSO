@@ -27,8 +27,12 @@ async def create_session(db: AsyncSession, user_id: int) -> str:
     return token
 
 
-async def resolve_session(db: AsyncSession, raw_token: str) -> models.User | None:
-    """Return the session's user, or None if the session is missing, expired or its user disabled."""
+async def resolve_session(db: AsyncSession, raw_token: str) -> tuple[models.User, bool] | None:
+    """Return (user, slid), or None if the session is missing, expired or its user disabled.
+
+    slid is True when this call extended the expiry; the caller must then re-send the cookie
+    (routes.session_cookie_header) so the browser's copy slides too.
+    """
     session = await db.get(models.Session, _hash(raw_token))
     now = utcnow()
     if session is None or session.expires <= now:
@@ -37,11 +41,12 @@ async def resolve_session(db: AsyncSession, raw_token: str) -> models.User | Non
     if user is None or user.disabled:
         return None
     # Write at most once an hour per session, not on every request.
-    if session.last_seen < now - SLIDE_AFTER:
+    slid = session.last_seen < now - SLIDE_AFTER
+    if slid:
         session.last_seen = now
         session.expires = now + SESSION_LIFETIME
         await db.flush()
-    return user
+    return user, slid
 
 
 async def delete_session(db: AsyncSession, raw_token: str) -> None:

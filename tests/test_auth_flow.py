@@ -94,12 +94,12 @@ async def _get(client: httpx.AsyncClient, url: str, cookie: str | None = None, *
 async def _authorize(
     client: httpx.AsyncClient,
     base: str = "",
-    nxt: str = "/spools",
+    nxt: str | None = "/spools",
     tamper: str = "",
     **identity: str,
 ) -> tuple[str, str, str]:
     """Run /auth/login and the fake /authorize. Returns (callback path+query, login cookie, authorize URL)."""
-    r = await _get(client, f"{base}/auth/login", params={"next": nxt})
+    r = await _get(client, f"{base}/auth/login", params={} if nxt is None else {"next": nxt})
     assert r.status_code == 302, r.text
     login_cookie = f"spoolman_login={_cookies(r)['spoolman_login'].value}"
     authorize_url = r.headers["location"]
@@ -110,9 +110,19 @@ async def _authorize(
     return f"{cb.path}?{cb.query}", login_cookie, authorize_url
 
 
-async def _login(client: httpx.AsyncClient, base: str = "", nxt: str = "/spools", **identity: str) -> httpx.Response:
+async def _login(
+    client: httpx.AsyncClient, base: str = "", nxt: str | None = "/spools", **identity: str
+) -> httpx.Response:
     callback, login_cookie, _ = await _authorize(client, base, nxt, **identity)
     return await _get(client, callback, login_cookie)
+
+
+def _assert_header_matches_login_cookie(r: httpx.Response) -> None:
+    """session_cookie_header (used to refresh a slid session) is byte-identical to the login cookie."""
+    (login_header,) = [h for h in r.headers.get_list("set-cookie") if h.startswith("spoolman_session=")]
+    token = _cookies(r)["spoolman_session"].value
+    assert routes.session_cookie_header(get_auth()[0], token) == login_header
+    assert "Max-Age=2592000" in login_header
 
 
 async def _users(db: AsyncSession) -> list[models.User]:
@@ -124,6 +134,7 @@ async def test_full_login_sets_cookie_and_creates_user(make_client: MakeClient, 
     client = await make_client()
     r = await _login(client, login_sub="u1", login_name="Ada", login_email="ada@x.test")
     assert r.status_code == 302
+    _assert_header_matches_login_cookie(r)
     assert r.headers["location"] == "/spools"
     morsel = _cookies(r)["spoolman_session"]
     assert morsel["httponly"]
@@ -132,7 +143,7 @@ async def test_full_login_sets_cookie_and_creates_user(make_client: MakeClient, 
     assert not morsel["secure"]
     users = await _users(db)
     assert [(u.oidc_sub, u.display_name, u.email) for u in users] == [("u1", "Ada", "ada@x.test")]
-    assert (await sessions.resolve_session(db, morsel.value)).id == users[0].id
+    assert await sessions.resolve_session(db, morsel.value) == (users[0], False)
 
 
 @pytest.mark.asyncio
@@ -193,6 +204,7 @@ async def test_redirect_uri_uses_public_url_behind_proxy(make_client: MakeClient
     r = await _get(client, callback, login_cookie)
     assert r.status_code == 302
     assert _cookies(r)["spoolman_session"]["secure"]
+    _assert_header_matches_login_cookie(r)
 
 
 @pytest.mark.asyncio
@@ -205,14 +217,23 @@ async def test_base_path_login(make_client: MakeClient, db: AsyncSession) -> Non
     assert r.status_code == 302
     assert r.headers["location"] == "/spoolman/spools"
     assert _cookies(r)["spoolman_session"]["path"] == "/spoolman"
+    _assert_header_matches_login_cookie(r)
     assert len(await _users(db)) == 1
+
+
+@pytest.mark.asyncio
+async def test_base_path_login_without_next_stays_under_base_path(make_client: MakeClient) -> None:
+    client = await make_client(base_path="/spoolman")
+    r = await _login(client, "/spoolman", None, login_sub="u1")
+    assert r.status_code == 302
+    assert r.headers["location"] == "/spoolman/"
 
 
 @pytest.mark.asyncio
 async def test_disabled_user_session_rejected(db: AsyncSession) -> None:
     user = await make_user(db, "u1")
     token = await sessions.create_session(db, user.id)
-    assert (await sessions.resolve_session(db, token)).id == user.id
+    assert await sessions.resolve_session(db, token) == (user, False)
     user.disabled = True
     assert await sessions.resolve_session(db, token) is None
 
@@ -234,9 +255,10 @@ async def test_session_expiry_slides_after_an_hour(db: AsyncSession) -> None:
     row = (await db.execute(select(models.Session))).scalar_one()
     stale = _now() - timedelta(hours=2)
     row.last_seen, row.expires = stale, stale + timedelta(days=1)
-    assert await sessions.resolve_session(db, token) is not None
+    assert await sessions.resolve_session(db, token) == (user, True)
     assert row.last_seen > stale
     assert row.expires > _now() + timedelta(days=29)
+    assert await sessions.resolve_session(db, token) == (user, False)  # slid once, not on every request
 
 
 @pytest.mark.asyncio

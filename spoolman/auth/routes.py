@@ -8,7 +8,7 @@ import httpx
 from authlib.common.errors import AuthlibBaseError
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from joserfc import jwt
 from joserfc.errors import JoseError
@@ -53,6 +53,13 @@ def _cookie_args(cfg: OidcConfig) -> dict:
     return {"path": cfg.base_path or "/", "secure": cfg.cookie_secure, "httponly": True, "samesite": "lax"}
 
 
+def session_cookie_header(cfg: OidcConfig, raw_token: str) -> str:
+    """Full Set-Cookie value for the session cookie; login and the sliding refresh both use it."""
+    resp = Response()
+    resp.set_cookie(SESSION_COOKIE, raw_token, max_age=int(SESSION_LIFETIME.total_seconds()), **_cookie_args(cfg))
+    return resp.headers["set-cookie"]
+
+
 def _safe_next(nxt: str, cfg: OidcConfig) -> str:
     r"""Only same-origin paths; `//host` and `/\host` are protocol-relative URLs to browsers."""
     if nxt.startswith("/") and not nxt.startswith(("//", "/\\")):
@@ -76,7 +83,7 @@ def _verify_id_token(id_token: str, jwks: dict, cfg: OidcConfig, provider: OidcP
 
 
 @router.get("/login")
-async def login(nxt: Annotated[str, Query(alias="next")] = "/") -> RedirectResponse:
+async def login(nxt: Annotated[str, Query(alias="next")] = "") -> RedirectResponse:
     """Send the browser to PocketID, remembering state, nonce, PKCE verifier and `next` in a signed cookie."""
     cfg, provider = get_auth()
     state, nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(48)
@@ -125,7 +132,7 @@ async def callback(
     raw = await create_session(db, user.id)
     await db.commit()
     resp = RedirectResponse(pending["next"], 302)
-    resp.set_cookie(SESSION_COOKIE, raw, max_age=int(SESSION_LIFETIME.total_seconds()), **_cookie_args(cfg))
+    resp.headers.append("set-cookie", session_cookie_header(cfg, raw))
     resp.delete_cookie(LOGIN_COOKIE, **_cookie_args(cfg))
     return resp
 

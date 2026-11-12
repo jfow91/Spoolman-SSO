@@ -77,16 +77,22 @@ async def _unclaimed(db: AsyncSession) -> models.User | None:
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def _has_unclaimed_rows(db: AsyncSession) -> bool:
+    if (un := await _unclaimed(db)) is None:
+        return False
+    scope = scope_for_user(un.id)
+    for model in _CLAIM_TABLES.values():
+        if (await db.execute(select(exists(owned(select(model), model, scope))))).scalar():
+            return True
+    return False
+
+
 @router.get("/me")
 async def get_me(db: DbSession, principal: Annotated[Principal, Depends(get_principal)]) -> Me:
     user = await db.get(models.User, principal.user_id)
     can_claim = False
-    if principal.is_admin and principal.via == "session" and (un := await _unclaimed(db)) is not None:
-        scope = scope_for_user(un.id)
-        for model in _CLAIM_TABLES.values():
-            if (await db.execute(select(exists(owned(select(model), model, scope))))).scalar():
-                can_claim = True
-                break
+    if principal.is_admin and principal.via == "session":
+        can_claim = await _has_unclaimed_rows(db)
     return Me(
         id=principal.user_id,
         display_name=principal.display_name,
@@ -100,9 +106,11 @@ async def get_me(db: DbSession, principal: Annotated[Principal, Depends(get_prin
 @router.post("/me/claim", responses={409: {"description": "Nothing to claim"}})
 async def claim(db: DbSession, admin: Annotated[Principal, Depends(require_admin)]) -> dict[str, int]:
     """Move everything the pre-multi-user placeholder account owns to the caller, in one transaction."""
-    un = await _unclaimed(db)
-    if un is None:
+    # Decide before any write: a 409 rolls back, so it must never follow the duplicate deletes.
+    if not await _has_unclaimed_rows(db):
         raise HTTPException(409, "Nothing to claim")
+    un = await _unclaimed(db)
+    assert un is not None  # noqa: S101
     src, dst = scope_for_user(un.id), scope_for_user(admin.user_id)
     # The caller's own tag/setting wins over an unclaimed duplicate; drop the duplicate so the move cannot collide.
     for model, col in ((models.Tag, models.Tag.uid), (models.Setting, models.Setting.key)):
@@ -112,8 +120,6 @@ async def claim(db: DbSession, admin: Annotated[Principal, Depends(require_admin
     for name, model in _CLAIM_TABLES.items():
         result = await db.execute(owned(update(model), model, src).values(owner_id=admin.user_id))
         counts[name] = result.rowcount  # type: ignore[attr-defined]
-    if not any(counts.values()):
-        raise HTTPException(409, "Nothing to claim")
     return counts
 
 

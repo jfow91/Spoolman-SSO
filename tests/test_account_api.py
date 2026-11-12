@@ -271,3 +271,19 @@ async def test_admin_cannot_read_other_accounts_spools(db: AsyncSession, ctx: Ct
     assert (await ctx.client.get(f"/spool/{s.id}")).status_code == 200
     ctx.as_user(b)
     assert (await ctx.client.get(f"/spool/{s.id}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_claim_with_only_colliding_rows_succeeds_once(db: AsyncSession, ctx: Ctx) -> None:
+    admin = await make_user(db, "a", admin=True)
+    un = await _unclaimed(db)
+    db.add_all([_setting(admin.id, "currency", "AUD"), _setting(un.id, "currency", "EUR")])
+    await db.flush()
+    ctx.as_user(admin)
+    assert (await ctx.client.get("/me")).json()["can_claim"] is True
+    r = await ctx.client.post("/me/claim")
+    assert r.status_code == 200
+    assert r.json()["setting"] == 0
+    assert (await ctx.client.post("/me/claim")).status_code == 409
+    assert (await ctx.client.get("/me")).json()["can_claim"] is False
+    assert (await db.execute(select(models.Setting.value))).scalar_one() == "AUD"

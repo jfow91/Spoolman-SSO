@@ -22,8 +22,8 @@ def upgrade() -> None:
 
     Schema only. CockroachDB runs each revision in its own transaction and refuses to mix
     schema changes and writes in one (see 304a32906234), so the multi-user change is split
-    into three revisions: this DDL, the backfill (c3d4e5f6a7b8), then the NOT NULL and key
-    swaps (b2c3d4e5f6a7).
+    into this DDL, the backfill (c3d4e5f6a7b8), the NOT NULL and foreign keys (b2c3d4e5f6a7),
+    then the setting primary key and tag index swaps (d4e5f6a7b8c9).
     """
     op.create_table(
         "user",
@@ -86,13 +86,13 @@ def downgrade() -> None:
     """Perform the downgrade."""
     for table in OWNED_TABLES:
         with op.batch_alter_table(table) as batch:
+            # Created by b2c3d4e5f6a7, dropped here: cockroachdb refuses to drop it in the same
+            # transaction as the foreign key that uses it.
+            batch.drop_index(f"ix_{table}_owner_id")
             batch.drop_column("owner_id")
 
+    # Indexes go with their tables; MySQL refuses to drop an index a foreign key still uses.
     op.drop_table("app_setting")
-    op.drop_index("ix_api_key_user_id", table_name="api_key")
-    op.drop_index("ix_api_key_id", table_name="api_key")
     op.drop_table("api_key")
-    op.drop_index("ix_session_user_id", table_name="session")
     op.drop_table("session")
-    op.drop_index("ix_user_id", table_name="user")
     op.drop_table("user")

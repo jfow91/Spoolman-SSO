@@ -242,7 +242,8 @@ class Tag(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("user.id"), index=True)
-    uid: Mapped[str] = mapped_column(String(64), index=True)
+    # Indexed through ix_tag_owner_id_uid; every uid lookup is per account.
+    uid: Mapped[str] = mapped_column(String(64))
     # Which kind of thing this tag points at; see the class docstring. Values live in
     # spoolman.tags. A string rather than an enum for the same reason `format` is one:
     # new kinds should not need a schema migration on four databases.

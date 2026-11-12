@@ -25,6 +25,7 @@ from tests.support.dbsession import make_user
 @pytest_asyncio.fixture(autouse=True)
 async def _owner(db: AsyncSession) -> None:
     """Stamp an owner on every new row until Task 10 threads one through create_spool_from_decoded_tag."""
+    # shortcut: this hides any forgotten owner_id in the code under test; delete it in Task 10.
     owner_id = (await make_user(db)).id
     await db.commit()  # so a rollback inside the code under test keeps the owner
 

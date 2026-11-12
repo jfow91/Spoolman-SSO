@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from spoolman.access.scope import Level, Scope, get_scope, require_level
 from spoolman.api.v1.models import (
     Filament,
     FilamentEvent,
@@ -218,6 +219,7 @@ async def find(
     *,
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     vendor_name_old: Annotated[
         str | None,
         Query(alias="vendor_name", title="Vendor Name", description="See vendor.name.", deprecated=True),
@@ -363,6 +365,7 @@ async def find(
     if color_hex is not None:
         filter_by_ids = await filament.find_by_color(
             db=db,
+            scope=scope,
             color_query_hex=color_hex,
             similarity_threshold=color_similarity_threshold,
         )
@@ -380,6 +383,7 @@ async def find(
     try:
         db_items, total_count = await filament.find(
             db=db,
+            scope=scope,
             ids=filter_by_ids,
             vendor_name=vendor_name if vendor_name is not None else vendor_name_old,
             vendor_id=vendor_ids,
@@ -412,6 +416,7 @@ async def find(
 )
 async def notify_any(
     websocket: WebSocket,
+    _scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
     websocket_manager.connect(("filament",), websocket)
@@ -436,9 +441,10 @@ async def notify_any(
 )
 async def get(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     filament_id: int,
 ) -> Filament:
-    db_item = await filament.get_by_id(db, filament_id)
+    db_item = await filament.get_by_id(db, scope, filament_id)
     return Filament.from_db(db_item)
 
 
@@ -448,6 +454,7 @@ async def get(
 )
 async def notify(
     websocket: WebSocket,
+    _scope: Annotated[Scope, Depends(get_scope)],
     filament_id: int,
 ) -> None:
     await websocket.accept()
@@ -471,6 +478,7 @@ async def notify(
 )
 async def create(  # noqa: ANN201
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     body: FilamentParameters,
 ):
     if body.extra:
@@ -482,6 +490,7 @@ async def create(  # noqa: ANN201
 
     db_item = await filament.create(
         db=db,
+        scope=scope,
         density=body.density,
         diameter=body.diameter,
         name=body.name,
@@ -520,6 +529,7 @@ async def create(  # noqa: ANN201
 )
 async def update(  # noqa: ANN201
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     filament_id: int,
     body: FilamentUpdateParameters,
 ):
@@ -534,6 +544,7 @@ async def update(  # noqa: ANN201
 
     db_item = await filament.update(
         db=db,
+        scope=scope,
         filament_id=filament_id,
         data=patch_data,
     )
@@ -553,10 +564,11 @@ async def update(  # noqa: ANN201
 )
 async def delete(  # noqa: ANN201
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     filament_id: int,
 ):
     try:
-        await filament.delete(db, filament_id)
+        await filament.delete(db, scope, filament_id)
     except ItemDeleteError:
         logger.exception("Failed to delete filament.")
         return JSONResponse(
@@ -587,11 +599,14 @@ async def delete(  # noqa: ANN201
 )
 async def link_tag(  # noqa: ANN201
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     filament_id: int,
     body: TagLinkParameters,
 ):
     try:
-        db_item = await tag_db.link_filament(db=db, filament_id=filament_id, uid=body.uid, tag_format=body.format)
+        db_item = await tag_db.link_filament(
+            db=db, scope=scope, filament_id=filament_id, uid=body.uid, tag_format=body.format
+        )
     except ValueError as e:
         return JSONResponse(status_code=400, content=Message(message=str(e)).dict())
     except TagConflictError as e:
@@ -615,6 +630,7 @@ async def link_tag(  # noqa: ANN201
 )
 async def unlink_tag(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     filament_id: int,
     uid: Annotated[
         str,
@@ -626,7 +642,7 @@ async def unlink_tag(
     ],
 ) -> Response:
     try:
-        await tag_db.unlink_filament(db=db, filament_id=filament_id, uid=uid)
+        await tag_db.unlink_filament(db=db, scope=scope, filament_id=filament_id, uid=uid)
     except ValueError as e:
         return JSONResponse(status_code=400, content=Message(message=str(e)).dict())
     return Response(status_code=204)

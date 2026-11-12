@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from spoolman.access.scope import Scope, get_scope
 from spoolman.database import filament, spool, vendor
 from spoolman.database.database import get_db_session
 from spoolman.database.models import Base
@@ -51,9 +52,10 @@ async def export_spools(
 async def export_filaments(
     *,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     fmt: ExportFormat,
 ) -> Response:
-    all_filaments, _ = await filament.find(db=db)
+    all_filaments, _ = await filament.find(db=db, scope=scope)
     return await _export(all_filaments, fmt, "filaments")
 
 
@@ -65,9 +67,10 @@ async def export_filaments(
 async def export_vendors(
     *,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     fmt: ExportFormat,
 ) -> Response:
-    all_vendors, _ = await vendor.find(db=db)
+    all_vendors, _ = await vendor.find(db=db, scope=scope)
     return await _export(all_vendors, fmt, "vendors")
 
 

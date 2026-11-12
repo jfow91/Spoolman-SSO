@@ -27,6 +27,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from spoolman.access.scope import Scope, owned
 from spoolman.api.v1.models import EventType
 from spoolman.database import filament, models, spool, vendor
 from spoolman.exceptions import ItemCreateError, ItemNotFoundError, TagConflictError
@@ -119,6 +120,7 @@ async def _link(
         return existing
 
     tag = models.Tag(
+        owner_id=target.owner_id,
         uid=uid,
         target_type=_target_type(target),
         format=tag_format,
@@ -198,6 +200,7 @@ async def link_spool(
 async def link_filament(
     *,
     db: AsyncSession,
+    scope: Scope,
     filament_id: int,
     uid: str,
     tag_format: str | None = None,
@@ -212,7 +215,7 @@ async def link_filament(
     """
     uid = normalize_uid(uid)
     tag_format = normalize_format(tag_format)
-    return await _link(db, await filament.get_by_id(db, filament_id), uid, tag_format)
+    return await _link(db, await filament.get_by_id(db, scope, filament_id), uid, tag_format)
 
 
 async def unlink_spool(*, db: AsyncSession, spool_id: int, uid: str) -> None:
@@ -232,7 +235,7 @@ async def unlink_spool(*, db: AsyncSession, spool_id: int, uid: str) -> None:
     await _unlink(db, await spool.get_by_id(db, spool_id), uid)
 
 
-async def unlink_filament(*, db: AsyncSession, filament_id: int, uid: str) -> None:
+async def unlink_filament(*, db: AsyncSession, scope: Scope, filament_id: int, uid: str) -> None:
     """Unlink a tag from a filament. Same rules as `unlink_spool`.
 
     Raises:
@@ -241,14 +244,15 @@ async def unlink_filament(*, db: AsyncSession, filament_id: int, uid: str) -> No
 
     """
     uid = normalize_uid(uid)
-    await _unlink(db, await filament.get_by_id(db, filament_id), uid)
+    await _unlink(db, await filament.get_by_id(db, scope, filament_id), uid)
 
 
-async def find_by_uid(db: AsyncSession, uid: str) -> Target | None:
+async def find_by_uid(db: AsyncSession, scope: Scope, uid: str) -> Target | None:
     """Find the spool or filament a tag UID is linked to, or None if the tag is unknown.
 
     Args:
         db: Database session.
+        scope: The account whose rows are searched or written.
         uid: The tag UID in any shape; normalized here.
 
     Returns:
@@ -264,19 +268,19 @@ async def find_by_uid(db: AsyncSession, uid: str) -> Target | None:
     if tag.spool_id is not None:
         return await spool.get_by_id(db, tag.spool_id)
     if tag.filament_id is not None:
-        return await filament.get_by_id(db, tag.filament_id)
+        return await filament.get_by_id(db, scope, tag.filament_id)
     # A kind addressed by value (a location) resolves to no row, and nothing reads those yet.
     return None
 
 
-async def _find_vendor_by_exact_name(db: AsyncSession, name: str) -> models.Vendor | None:
+async def _find_vendor_by_exact_name(db: AsyncSession, scope: Scope, name: str) -> models.Vendor | None:
     """Find a vendor whose name matches exactly.
 
     `vendor.find`'s name filter is a substring match (it backs the vendor list's search
     box), which is the wrong tool for "does this vendor already exist" -- a substring hit on
     an unrelated, longer vendor name would silently attach an auto-created filament to it.
     """
-    matches, _total = await vendor.find(db=db, name=name)
+    matches, _total = await vendor.find(db=db, scope=scope, name=name)
     for candidate in matches:
         if candidate.name == name:
             return candidate
@@ -332,6 +336,7 @@ def _matches(candidate_value: float | None, target_value: float | None, toleranc
 
 async def _find_filament_for_product(
     db: AsyncSession,
+    scope: Scope,
     decoded: tag_decode.DecodedTag,
     vendor_item: models.Vendor | None,
     diameter: float,
@@ -345,11 +350,15 @@ async def _find_filament_for_product(
     """
     if decoded.name is None or decoded.material is None:
         return None
-    stmt = sqlalchemy.select(models.Filament).where(
-        models.Filament.name == decoded.name,
-        models.Filament.material == decoded.material,
-        models.Filament.vendor_id == (vendor_item.id if vendor_item is not None else None),
-        models.Filament.color_hex == decoded.color_hex,
+    stmt = owned(
+        sqlalchemy.select(models.Filament).where(
+            models.Filament.name == decoded.name,
+            models.Filament.material == decoded.material,
+            models.Filament.vendor_id == (vendor_item.id if vendor_item is not None else None),
+            models.Filament.color_hex == decoded.color_hex,
+        ),
+        models.Filament,
+        scope,
     )
     candidates = (await db.execute(stmt)).scalars().all()
     for candidate in candidates:
@@ -365,6 +374,7 @@ async def _find_filament_for_product(
 async def create_spool_from_decoded_tag(
     *,
     db: AsyncSession,
+    scope: Scope,
     uid: str,
     tag_format: str | None,
     decoded: tag_decode.DecodedTag,
@@ -380,6 +390,7 @@ async def create_spool_from_decoded_tag(
 
     Args:
         db: Database session.
+        scope: The account whose rows are searched or written.
         uid: The tag UID in any shape; normalized here (also normalized again by `link`).
         tag_format: The tag format that was decoded, e.g. "openprinttag".
         decoded: The decoded tag contents.
@@ -442,15 +453,16 @@ async def create_spool_from_decoded_tag(
     try:
         vendor_item = None
         if decoded.vendor_name:
-            vendor_item = await _find_vendor_by_exact_name(db, decoded.vendor_name)
+            vendor_item = await _find_vendor_by_exact_name(db, scope, decoded.vendor_name)
             if vendor_item is None:
-                vendor_item = await vendor.create(db=db, name=decoded.vendor_name, commit=False)
+                vendor_item = await vendor.create(db=db, scope=scope, name=decoded.vendor_name, commit=False)
                 vendor_created = True
 
-        filament_item = await _find_filament_for_product(db, decoded, vendor_item, diameter)
+        filament_item = await _find_filament_for_product(db, scope, decoded, vendor_item, diameter)
         if filament_item is None:
             filament_item = await filament.create(
                 db=db,
+                scope=scope,
                 density=density,
                 diameter=diameter,
                 material=decoded.material,
@@ -468,6 +480,7 @@ async def create_spool_from_decoded_tag(
 
         spool_item = await spool.create(
             db=db,
+            scope=scope,
             filament_id=filament_item.id,
             initial_weight=decoded.initial_weight,
             spool_weight=decoded.spool_weight,
@@ -488,7 +501,7 @@ async def create_spool_from_decoded_tag(
     return spool_item
 
 
-async def find_spool_by_uid(db: AsyncSession, uid: str) -> models.Spool | None:
+async def find_spool_by_uid(db: AsyncSession, scope: Scope, uid: str) -> models.Spool | None:
     """Find the spool a tag UID is linked to, or None if it's unknown or linked to a filament instead.
 
     A thin, correctly-typed wrapper over `find_by_uid` for callers that only ever deal in
@@ -496,6 +509,7 @@ async def find_spool_by_uid(db: AsyncSession, uid: str) -> models.Spool | None:
 
     Args:
         db: Database session.
+        scope: The account whose rows are searched or written.
         uid: The tag UID in any shape; normalized here.
 
     Returns:
@@ -505,5 +519,5 @@ async def find_spool_by_uid(db: AsyncSession, uid: str) -> models.Spool | None:
         ValueError: If the UID is not valid.
 
     """
-    target = await find_by_uid(db, uid)
+    target = await find_by_uid(db, scope, uid)
     return target if isinstance(target, models.Spool) else None

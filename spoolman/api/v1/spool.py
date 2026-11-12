@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import QueryParams
 
+from spoolman.access.scope import Level, Scope, require_level
 from spoolman.api.v1.models import (
     Filament,
     Message,
@@ -769,6 +770,7 @@ async def notify(
 )
 async def create(  # noqa: ANN201
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     body: SpoolParameters,
 ):
     if body.remaining_weight is not None and body.used_weight is not None:
@@ -787,6 +789,7 @@ async def create(  # noqa: ANN201
     try:
         db_item = await spool.create(
             db=db,
+            scope=scope,
             filament_id=body.filament_id,
             price=body.price,
             initial_weight=body.initial_weight,
@@ -828,6 +831,7 @@ async def create(  # noqa: ANN201
 )
 async def update(  # noqa: ANN201
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     spool_id: int,
     body: SpoolUpdateParameters,
 ):
@@ -849,6 +853,7 @@ async def update(  # noqa: ANN201
     try:
         db_item = await spool.update(
             db=db,
+            scope=scope,
             spool_id=spool_id,
             data=patch_data,
         )

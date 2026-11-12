@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import contains_eager, joinedload
 from sqlalchemy.sql.functions import coalesce
 
+from spoolman.access.scope import Scope
 from spoolman.api.v1.models import (
     EventType,
     Spool,
@@ -59,6 +60,7 @@ def utc_timezone_naive(dt: datetime) -> datetime:
 async def create(
     *,
     db: AsyncSession,
+    scope: Scope,
     filament_id: int,
     remaining_weight: float | None = None,
     initial_weight: float | None = None,
@@ -80,7 +82,7 @@ async def create(
     is batching this write into a larger transaction (see spoolman.database.tag) and will
     commit and notify once, itself, when everything has succeeded.
     """
-    filament_item = await filament.get_by_id(db, filament_id)
+    filament_item = await filament.get_by_id(db, scope, filament_id)
 
     # Set spool_weight to spool_weight if spool_weight is not null and spool_weight not provided
     if spool_weight is None and filament_item.spool_weight is not None:
@@ -108,6 +110,7 @@ async def create(
         last_used = utc_timezone_naive(last_used)
 
     spool = models.Spool(
+        owner_id=scope.account_id,
         filament=filament_item,
         registered=datetime.utcnow().replace(microsecond=0),
         initial_weight=initial_weight,
@@ -1068,6 +1071,7 @@ async def _attach_filament_previews(
 async def update(
     *,
     db: AsyncSession,
+    scope: Scope,
     spool_id: int,
     data: dict,
 ) -> models.Spool:
@@ -1075,7 +1079,7 @@ async def update(
     spool = await get_by_id(db, spool_id)
     for k, v in data.items():
         if k == "filament_id":
-            spool.filament = await filament.get_by_id(db, v)
+            spool.filament = await filament.get_by_id(db, scope, v)
             # If there is no initial_weight, calculate it from the filament weight
             if spool.initial_weight is None and spool.filament.weight is not None:
                 spool.initial_weight = spool.filament.weight

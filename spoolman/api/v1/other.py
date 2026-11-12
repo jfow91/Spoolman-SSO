@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, RootModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from spoolman.access.scope import Scope, get_scope
 from spoolman.database import filament, spool
 from spoolman.database.database import get_db_session
 
@@ -43,8 +44,9 @@ router = APIRouter(
 async def find_materials(
     *,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> list[str]:
-    return await filament.find_materials(db=db)
+    return await filament.find_materials(db=db, scope=scope)
 
 
 @router.get(
@@ -69,8 +71,9 @@ async def find_materials(
 async def find_article_numbers(
     *,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> list[str]:
-    return await filament.find_article_numbers(db=db)
+    return await filament.find_article_numbers(db=db, scope=scope)
 
 
 @router.get(

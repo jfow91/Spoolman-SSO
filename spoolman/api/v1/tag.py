@@ -13,11 +13,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from spoolman.access.scope import Level, Scope, get_scope
 from spoolman.api.v1.models import EventType, Filament, Message, Spool, TagDecodedInfo, TagReader, TagScan, TagScanEvent
 from spoolman.database import models
 from spoolman.database import tag as tag_db
 from spoolman.database.database import get_db_session
-from spoolman.exceptions import ItemCreateError, TagConflictError
+from spoolman.exceptions import AccessDeniedError, ItemCreateError, TagConflictError
 from spoolman.scanrelay import READER_ID_PATTERN, derive_reader_id, scan_relay
 from spoolman.tags import (
     FORMAT_MAX_LENGTH,
@@ -156,6 +157,7 @@ async def scan(
     *,
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     body: TagScanParameters,
 ) -> JSONResponse:
     reader_id = body.reader_id or derive_reader_id(request.client.host if request.client else None)
@@ -169,7 +171,7 @@ async def scan(
     except ValueError as e:
         return JSONResponse(status_code=400, content=Message(message=str(e)).dict())
 
-    target = await tag_db.find_by_uid(db, uid)
+    target = await tag_db.find_by_uid(db, scope, uid)
     db_spool = target if isinstance(target, models.Spool) else None
     db_filament = target if isinstance(target, models.Filament) else None
 
@@ -182,9 +184,12 @@ async def scan(
     # place for one. Validation of the decoded values happens inside create, before any write.
     creatable = decoded is not None and decoded.material_class == "FFF"
     if db_spool is None and db_filament is None and body.create and creatable:
+        if scope.level < Level.EDIT:
+            raise AccessDeniedError("View only")
         try:
             db_spool = await tag_db.create_spool_from_decoded_tag(
                 db=db,
+                scope=scope,
                 uid=uid,
                 tag_format=body.format,
                 decoded=decoded,
@@ -193,7 +198,7 @@ async def scan(
         except TagConflictError:
             # Lost a race with a concurrent scan of the same tag; report the winner as an
             # ordinary match rather than surfacing a conflict for a create nobody asked to see.
-            db_spool = await tag_db.find_spool_by_uid(db, uid)
+            db_spool = await tag_db.find_spool_by_uid(db, scope, uid)
         except ItemCreateError:
             logger.warning("Refused to auto-create a spool from decoded tag %s", uid, exc_info=True)
             # Values we refused to store must not reach the client either: report the tag as undecodable.

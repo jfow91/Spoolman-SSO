@@ -2,9 +2,11 @@
 
 import logging
 import subprocess
+import sys
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
+import httpx
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +17,7 @@ from scheduler.asyncio.scheduler import Scheduler
 
 from spoolman import env, externaldb, security, update_check
 from spoolman.api.v1.router import app as v1_app
+from spoolman.auth import config as auth_config
 from spoolman.client import SinglePageApplication, render_config_js
 from spoolman.database import database
 from spoolman.prometheus.metrics import registry
@@ -222,6 +225,14 @@ async def startup() -> None:
     logger.info("Using data directory: %s", env.get_data_dir().resolve())
     logger.info("Using logs directory: %s", env.get_logs_dir().resolve())
     logger.info("Using backups directory: %s", env.get_backups_dir().resolve())
+
+    try:
+        oidc_cfg = auth_config.load_oidc_config()
+        async with httpx.AsyncClient(timeout=10) as http:
+            auth_config.set_auth(oidc_cfg, await auth_config.discover(oidc_cfg, http))
+    except auth_config.AuthConfigError as exc:
+        logger.error("%s", exc)  # noqa: TRY400
+        sys.exit(1)
 
     logger.info("Setting up database...")
     database.setup_db(database.get_connection_url())

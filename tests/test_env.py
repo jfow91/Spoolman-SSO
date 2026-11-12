@@ -69,3 +69,9 @@ def test_can_write_to_data_dir_read_only(monkeypatch: pytest.MonkeyPatch, tmp_pa
         assert env.can_write_to_data_dir() is False
     finally:
         tmp_path.chmod(0o700)
+
+
+def test_legacy_client_always_disabled(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setenv("SPOOLMAN_LEGACY_CLIENT", "TRUE")
+    assert env.is_legacy_client_enabled() is False
+    assert "SPOOLMAN_LEGACY_CLIENT is ignored" in caplog.text

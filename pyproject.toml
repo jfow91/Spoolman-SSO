@@ -32,6 +32,8 @@ dependencies = [
     # cbor2 version, so armv7 always builds from sdist, and the build image (see the
     # greenlet/armv7 patchelf step in the Dockerfile) has a C toolchain but no Rust one.
     "cbor2>=5.9,<6",
+    "authlib~=1.6",
+    "itsdangerous~=2.2",
 ]
 requires-python = ">=3.10,<3.15"
 

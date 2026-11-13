@@ -1,5 +1,7 @@
 """Tests for OIDC configuration loading and provider discovery."""
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -47,13 +49,15 @@ def test_missing_vars_listed_together(monkeypatch: pytest.MonkeyPatch) -> None:
         assert v in str(e.value)
 
 
-def test_short_session_secret_rejected(full_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.usefixtures("full_env")
+def test_short_session_secret_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SPOOLMAN_SESSION_SECRET", "x" * 31)
     with pytest.raises(AuthConfigError, match="32"):
         load_oidc_config()
 
 
-def test_metrics_token_optional_and_min_32(full_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # noqa: ANN001
+@pytest.mark.usefixtures("full_env")
+def test_metrics_token_optional_and_min_32(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert load_oidc_config().metrics_token is None
     monkeypatch.setenv("SPOOLMAN_METRICS_TOKEN", "m" * 31)
     with pytest.raises(AuthConfigError, match="SPOOLMAN_METRICS_TOKEN must be at least 32"):
@@ -64,15 +68,17 @@ def test_metrics_token_optional_and_min_32(full_env: None, monkeypatch: pytest.M
     assert load_oidc_config().metrics_token == "f" * 32
 
 
-def test_secret_file_variant(full_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # noqa: ANN001
+@pytest.mark.usefixtures("full_env")
+def test_secret_file_variant(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     f = tmp_path / "secret"
     f.write_text("from-file\n")
     monkeypatch.setenv("SPOOLMAN_OIDC_CLIENT_SECRET_FILE", str(f))
     monkeypatch.setenv("SPOOLMAN_OIDC_CLIENT_SECRET", "ignored")
-    assert load_oidc_config().client_secret == "from-file"
+    assert load_oidc_config().client_secret == "from-file"  # noqa: S105
 
 
-def test_redirect_uri_from_public_url_with_base_path(full_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.usefixtures("full_env")
+def test_redirect_uri_from_public_url_with_base_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SPOOLMAN_PUBLIC_URL", "https://s.lab8.au/")
     monkeypatch.setenv("SPOOLMAN_BASE_PATH", "/spoolman")
     cfg = load_oidc_config()
@@ -81,13 +87,15 @@ def test_redirect_uri_from_public_url_with_base_path(full_env: None, monkeypatch
     assert cfg.admin_group == "spoolman_admins"
 
 
-def test_http_public_url_not_secure(full_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.usefixtures("full_env")
+def test_http_public_url_not_secure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SPOOLMAN_PUBLIC_URL", "http://10.0.0.5:7912")
     assert load_oidc_config().cookie_secure is False
 
 
 @pytest.mark.asyncio
-async def test_discover_retries_until_up(full_env: None) -> None:
+@pytest.mark.usefixtures("full_env")
+async def test_discover_retries_until_up() -> None:
     calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -106,7 +114,8 @@ async def test_discover_retries_until_up(full_env: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_discover_gives_up(full_env: None) -> None:
+@pytest.mark.usefixtures("full_env")
+async def test_discover_gives_up() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("down", request=request)
 

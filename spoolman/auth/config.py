@@ -117,7 +117,7 @@ async def discover(
                 end_session_endpoint=doc.get("end_session_endpoint"),
                 issuer=doc["issuer"],
             )
-        except (httpx.HTTPError, ValueError, KeyError) as exc:
+        except (httpx.HTTPError, ValueError, KeyError) as exc:  # noqa: PERF203 -- retry until the deadline
             if time.monotonic() >= deadline:
                 raise AuthConfigError(f"OIDC discovery failed at {url}: {exc!r}") from exc
             logger.warning("OIDC discovery at %s not ready (%r), retrying...", url, exc)

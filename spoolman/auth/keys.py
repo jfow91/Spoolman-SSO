@@ -28,6 +28,7 @@ def generate_key() -> str:
 
 
 def hash_key(raw: str) -> str:
+    """Hash a raw key for storage; the raw value is never stored."""
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -70,11 +71,13 @@ async def verify_key(db: AsyncSession, raw: str) -> tuple[models.User, models.Ap
 
 
 async def list_keys(db: AsyncSession, user_id: int) -> list[models.ApiKey]:
+    """List the keys belonging to a user."""
     result = await db.execute(select(models.ApiKey).where(models.ApiKey.user_id == user_id).order_by(models.ApiKey.id))
     return list(result.scalars())
 
 
 async def revoke_key(db: AsyncSession, user_id: int, key_id: int) -> None:
+    """Delete a key, which must belong to the user."""
     key = await db.get(models.ApiKey, key_id)
     if key is None or key.user_id != user_id:
         raise ItemNotFoundError(f"No key with ID {key_id} found.")

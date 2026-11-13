@@ -53,7 +53,9 @@ async def test_scan_unknown_to_scanner_even_if_other_account_has_it(db: AsyncSes
 async def test_autocreate_creates_vendor_filament_spool_in_scope(db: AsyncSession):
     a, b = await _two(db)
     decoded = DecodedTag(material="PLA", name="X", vendor_name="Acme", diameter=1.75, density=1.24, weight=1000.0)
-    created = await tag.create_spool_from_decoded_tag(db=db, scope=a, uid=UID, tag_format="openprinttag", decoded=decoded)
+    created = await tag.create_spool_from_decoded_tag(
+        db=db, scope=a, uid=UID, tag_format="openprinttag", decoded=decoded
+    )
     assert created.owner_id == a.account_id
     assert created.filament.owner_id == a.account_id
     assert created.filament.vendor.owner_id == a.account_id

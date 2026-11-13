@@ -1,4 +1,7 @@
+"""Tests for the scope helpers."""
+
 from datetime import datetime
+from typing import Annotated
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -7,10 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from spoolman.access.principal import Principal, get_principal
-from spoolman.access.scope import Level, get_scope, owned, require_level, scope_for_user
+from spoolman.access.scope import Level, Scope, get_scope, owned, require_level, scope_for_user
+from spoolman.api.v1.router import accessdeniederror_exception_handler
 from spoolman.database.models import Vendor
 from spoolman.exceptions import AccessDeniedError
-from spoolman.api.v1.router import accessdeniederror_exception_handler
 from tests.support.dbsession import make_user
 
 
@@ -39,7 +42,7 @@ def test_key_scope_levels() -> None:
 
 
 def test_require_level_blocks_view_key_on_write() -> None:
-    view = get_scope(Principal(1, "x", False, "key", "view"))
+    view = get_scope(Principal(1, "x", is_admin=False, via="key", key_level="view"))
     with pytest.raises(AccessDeniedError, match="View only"):
         require_level(Level.EDIT)(view)
     assert require_level(Level.VIEW)(view) is view
@@ -52,7 +55,7 @@ def test_view_key_gets_403_message_body() -> None:
     app.dependency_overrides[get_principal] = lambda: Principal(1, "x", is_admin=False, via="key", key_level="view")
 
     @app.post("/w")
-    def write(_scope=Depends(require_level(Level.EDIT))) -> dict:  # noqa: B008
+    def write(_scope: Annotated[Scope, Depends(require_level(Level.EDIT))]) -> dict:
         return {}
 
     r = TestClient(app).post("/w")

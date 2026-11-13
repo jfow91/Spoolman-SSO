@@ -56,4 +56,5 @@ _Stmt = TypeVar("_Stmt", Select, Update, Delete)
 
 
 def owned(stmt: _Stmt, model: type[Base], scope: Scope) -> _Stmt:
+    """Restrict a statement to the rows owned by the scope's account."""
     return stmt.where(model.owner_id == scope.account_id)  # type: ignore[attr-defined]

@@ -14,23 +14,25 @@ from starlette.responses import JSONResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Route
 
 CLIENT_ID = "spoolman"
-CLIENT_SECRET = "test-secret"
+CLIENT_SECRET = "test-secret"  # noqa: S105 -- test-only fake secret
 
 _KEY = JsonWebKey.generate_key("RSA", 2048, is_private=True, options={"kid": "fake-oidc-key"})
 
 
-def make_app(issuer: str) -> Starlette:
+def make_app(issuer: str) -> Starlette:  # noqa: C901
     codes: dict[str, dict] = {}  # code -> authorize params + identity; popped on use (single-use)
 
     async def discovery(_: Request) -> JSONResponse:
-        return JSONResponse({
-            "issuer": issuer,
-            "authorization_endpoint": f"{issuer}/authorize",
-            "token_endpoint": f"{issuer}/token",
-            "jwks_uri": f"{issuer}/jwks",
-            "end_session_endpoint": f"{issuer}/end-session",
-            "id_token_signing_alg_values_supported": ["RS256"],
-        })
+        return JSONResponse(
+            {
+                "issuer": issuer,
+                "authorization_endpoint": f"{issuer}/authorize",
+                "token_endpoint": f"{issuer}/token",
+                "jwks_uri": f"{issuer}/jwks",
+                "end_session_endpoint": f"{issuer}/end-session",
+                "id_token_signing_alg_values_supported": ["RS256"],
+            }
+        )
 
     async def jwks(_: Request) -> JSONResponse:
         return JSONResponse({"keys": [_KEY.as_dict(is_private=False)]})
@@ -66,18 +68,22 @@ def make_app(issuer: str) -> Starlette:
         if "login_groups" in q:
             claims["groups"] = q["login_groups"].split(",")
         id_token = jwt.encode({"alg": "RS256", "kid": _KEY.as_dict()["kid"]}, claims, _KEY).decode()
-        return JSONResponse({"access_token": secrets.token_urlsafe(16), "token_type": "Bearer", "expires_in": 300, "id_token": id_token})
+        return JSONResponse(
+            {"access_token": secrets.token_urlsafe(16), "token_type": "Bearer", "expires_in": 300, "id_token": id_token}
+        )
 
     async def end_session(_: Request) -> PlainTextResponse:
         return PlainTextResponse("logged out")
 
-    return Starlette(routes=[
-        Route("/.well-known/openid-configuration", discovery),
-        Route("/authorize", authorize),
-        Route("/token", token, methods=["POST"]),
-        Route("/jwks", jwks),
-        Route("/end-session", end_session),
-    ])
+    return Starlette(
+        routes=[
+            Route("/.well-known/openid-configuration", discovery),
+            Route("/authorize", authorize),
+            Route("/token", token, methods=["POST"]),
+            Route("/jwks", jwks),
+            Route("/end-session", end_session),
+        ]
+    )
 
 
 app = make_app(os.environ.get("FAKE_OIDC_ISSUER", "http://fake-oidc:9000"))

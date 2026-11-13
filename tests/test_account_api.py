@@ -11,12 +11,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from spoolman.access.principal import Principal, get_principal
+from spoolman.access.scope import scope_for_user
 from spoolman.api.v1 import account, spool
 from spoolman.api.v1.router import accessdeniederror_exception_handler, itemnotfounderror_exception_handler
 from spoolman.auth import keys, sessions
 from spoolman.database import models
 from spoolman.database.database import get_db_session
-from spoolman.access.scope import scope_for_user
 from spoolman.exceptions import AccessDeniedError, ItemNotFoundError
 from spoolman.extra_field_registry import EntityType, get_extra_fields
 from tests.support.dbsession import make_user
@@ -28,10 +28,12 @@ class Ctx:
     """The test app plus a switch for who is calling."""
 
     def __init__(self, client: httpx.AsyncClient, state: dict) -> None:
+        """Hold the client and the mutable caller state."""
         self.client = client
         self.state = state
 
     def as_user(self, user: models.User, via: str = "session", level: str | None = None) -> None:
+        """Make subsequent requests come from this user."""
         self.state["p"] = Principal(user.id, user.display_name, user.is_admin, via, level)  # type: ignore[arg-type]
 
 

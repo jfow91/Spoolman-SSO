@@ -171,7 +171,9 @@ class ScanRelay:
         with self._lock:
             self._prune_readers(now)
             return sorted(
-                (r for r in self._readers.values() if r.account_id == account_id), key=lambda reader: reader.last_seen, reverse=True
+                (r for r in self._readers.values() if r.account_id == account_id),
+                key=lambda reader: reader.last_seen,
+                reverse=True,
             )
 
     def _prune_readers(self, now: datetime) -> None:

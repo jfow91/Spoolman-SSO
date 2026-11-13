@@ -549,10 +549,29 @@ jobs:
       - name: Load built image
         run: docker load --input /tmp/spoolman-image/${{ matrix.tarball }}
 
+      # The app refuses to start without OIDC config, so give it the amd64 fake provider.
+      - name: Download fake OIDC image
+        uses: actions/download-artifact@v4.1.7
+        with:
+          name: spoolman-fake-oidc-image
+          path: /tmp/spoolman-fake-oidc-image
+
+      - name: Start fake OIDC provider
+        run: |
+          docker load --input /tmp/spoolman-fake-oidc-image/spoolman-fake-oidc.tar
+          docker network create smoke
+          docker run -d --name fake-oidc --network smoke ${{ env.FAKE_OIDC_IMAGE }}
+
       - name: Start Spoolman (${{ matrix.arch }}, emulated via QEMU)
         run: |
           docker run -d --name spoolman-smoke \
             --platform ${{ matrix.platform }} \
+            --network smoke \
+            -e SPOOLMAN_OIDC_ISSUER=http://fake-oidc:9000 \
+            -e SPOOLMAN_OIDC_CLIENT_ID=spoolman \
+            -e SPOOLMAN_OIDC_CLIENT_SECRET=test-secret \
+            -e SPOOLMAN_PUBLIC_URL=http://localhost:8000 \
+            -e SPOOLMAN_SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
             -p 8000:8000 \
             ${{ env.GHCR_IMAGE }}:test-${{ matrix.arch }}
 

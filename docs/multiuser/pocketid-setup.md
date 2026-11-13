@@ -42,9 +42,25 @@ Everyone signs in through PocketID and gets their own account. Data from before 
 belongs to a placeholder until an admin clicks **Claim existing data** (shown once after sign-in).
 If a setting or tag clashes with one the admin already has, the admin's own wins.
 
+### Upgrading from Spoolman
+
+- Back up the database first. Downgrading is not clean: it fails if two accounts share a setting
+  key or tag UID, and otherwise merges every account's rows with no owner.
+- Every existing integration (Moonraker, Home Assistant, OctoPrint, NFC/ESP readers posting to
+  `/tag/scan`) gets 401 until it is given a key URL or header (see Printer keys).
+- Claim right after the first admin sign-in, before configuring anything: your own settings,
+  custom fields and locations win over the old data on a clash.
+- A database already migrated by an upstream Spoolman release newer than this fork's base
+  (2026-11-10) will not start. The fork must be the next version you run.
+
 An admin is a member of the admin group at last login. Admins can list, disable, enable and
 revoke access for users, and trigger backups (`POST /backup` is admin only). Admins cannot see
-other people's data.
+other people's data. To remove someone, also Disable them on the Users page (or Revoke access);
+PocketID changes apply at their next sign-in, and sessions last 30 days while in use. Enabling a
+user again does not restore their keys; they must create new ones.
+
+`SPOOLMAN_CORS_ORIGIN=*` or debug mode turns off the origin guard, which matters for sign-in
+cookies on homelab sibling subdomains. Leave both off when using sign-in.
 
 ## 4. Printer keys
 

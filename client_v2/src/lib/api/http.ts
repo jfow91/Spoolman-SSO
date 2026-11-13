@@ -67,7 +67,9 @@ async function ensureOk(res: Response, method: string, path: string): Promise<Re
 		} catch {
 			/* no body, or not JSON */
 		}
-		const detail = typeof body?.message === 'string' ? body.message : '';
+		// FastAPI's HTTPException sends `detail`; the app's own handlers send `message`.
+		const reason = body?.message ?? body?.detail;
+		const detail = typeof reason === 'string' ? reason : '';
 		throw new HttpError(`${method} ${path} → ${res.status}${detail ? `: ${detail}` : ''}`, res.status, body);
 	}
 	return res;

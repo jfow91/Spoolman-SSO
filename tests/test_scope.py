@@ -7,9 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from spoolman.access.principal import Principal, get_principal
-from spoolman.access.scope import Level, ensure_same_account, get_scope, owned, require_level, scope_for_user
+from spoolman.access.scope import Level, get_scope, owned, require_level, scope_for_user
 from spoolman.database.models import Vendor
-from spoolman.exceptions import AccessDeniedError, ItemNotFoundError
+from spoolman.exceptions import AccessDeniedError
 from spoolman.api.v1.router import accessdeniederror_exception_handler
 from tests.support.dbsession import make_user
 
@@ -44,13 +44,6 @@ def test_require_level_blocks_view_key_on_write() -> None:
         require_level(Level.EDIT)(view)
     assert require_level(Level.VIEW)(view) is view
     assert require_level(Level.EDIT)(scope_for_user(1)).level == Level.OWNER
-
-
-def test_ensure_same_account_raises_not_found() -> None:
-    scope = scope_for_user(1)
-    ensure_same_account(scope, _vendor(1, "ok"), None)
-    with pytest.raises(ItemNotFoundError):
-        ensure_same_account(scope, _vendor(1, "ok"), _vendor(2, "other"))
 
 
 def test_view_key_gets_403_message_body() -> None:

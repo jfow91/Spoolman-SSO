@@ -10,7 +10,7 @@ from sqlalchemy import Delete, Select, Update
 
 from spoolman.access.principal import Principal, get_principal
 from spoolman.database.models import Base
-from spoolman.exceptions import AccessDeniedError, ItemNotFoundError
+from spoolman.exceptions import AccessDeniedError
 
 
 class Level(IntEnum):
@@ -57,10 +57,3 @@ _Stmt = TypeVar("_Stmt", Select, Update, Delete)
 
 def owned(stmt: _Stmt, model: type[Base], scope: Scope) -> _Stmt:
     return stmt.where(model.owner_id == scope.account_id)  # type: ignore[attr-defined]
-
-
-def ensure_same_account(scope: Scope, *rows: Base | None) -> None:
-    """Raise ItemNotFoundError if any row belongs to another account (None rows are skipped)."""
-    for row in rows:
-        if row is not None and row.owner_id != scope.account_id:  # type: ignore[attr-defined]
-            raise ItemNotFoundError(f"No {type(row).__name__.lower()} with ID {row.id} found.")  # type: ignore[attr-defined]

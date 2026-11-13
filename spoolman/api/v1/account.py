@@ -16,6 +16,7 @@ from spoolman.auth import keys, sessions
 from spoolman.database import models
 from spoolman.database.database import get_db_session
 from spoolman.exceptions import AccessDeniedError, ItemNotFoundError
+from spoolman.extra_field_registry import EntityType, extra_field_cache
 
 router = APIRouter(tags=["account"])
 
@@ -120,6 +121,11 @@ async def claim(db: DbSession, admin: Annotated[Principal, Depends(require_admin
     for name, model in _CLAIM_TABLES.items():
         result = await db.execute(owned(update(model), model, src).values(owner_id=admin.user_id))
         counts[name] = result.rowcount  # type: ignore[attr-defined]
+    # The moved extra_fields_* settings bypass the settings API, so drop both accounts' cached definitions.
+    for uid in (un.id, admin.user_id):
+        for entity_type in EntityType:
+            extra_field_cache.pop((uid, entity_type), None)
+    await db.commit()
     return counts
 
 
@@ -136,6 +142,7 @@ async def create_my_key(
     principal: Annotated[Principal, Depends(require_session)],
 ) -> KeyCreated:
     row, raw = await keys.create_key(db, principal.user_id, body.name, body.level)
+    await db.commit()
     return KeyCreated(**KeyOut.model_validate(row, from_attributes=True).model_dump(), key=raw)
 
 
@@ -146,6 +153,7 @@ async def delete_my_key(
     principal: Annotated[Principal, Depends(require_session)],
 ) -> Response:
     await keys.revoke_key(db, principal.user_id, key_id)
+    await db.commit()
     return Response(status_code=204)
 
 
@@ -174,16 +182,19 @@ async def disable_user(user_id: int, db: DbSession, admin: Annotated[Principal, 
         raise HTTPException(400, "You cannot disable yourself")
     user.disabled = True
     await _cut_access(db, user.id)
+    await db.commit()
     return Response(status_code=204)
 
 
 @router.post("/admin/users/{user_id}/enable", status_code=204)
 async def enable_user(user_id: int, db: DbSession, _admin: Annotated[Principal, Depends(require_admin)]) -> Response:
     (await _target(db, user_id)).disabled = False
+    await db.commit()
     return Response(status_code=204)
 
 
 @router.post("/admin/users/{user_id}/revoke-access", status_code=204)
 async def revoke_access(user_id: int, db: DbSession, _admin: Annotated[Principal, Depends(require_admin)]) -> Response:
     await _cut_access(db, (await _target(db, user_id)).id)
+    await db.commit()
     return Response(status_code=204)

@@ -16,7 +16,9 @@ from spoolman.api.v1.router import accessdeniederror_exception_handler, itemnotf
 from spoolman.auth import keys, sessions
 from spoolman.database import models
 from spoolman.database.database import get_db_session
+from spoolman.access.scope import scope_for_user
 from spoolman.exceptions import AccessDeniedError, ItemNotFoundError
+from spoolman.extra_field_registry import EntityType, get_extra_fields
 from tests.support.dbsession import make_user
 
 NOW = datetime.utcnow().replace(microsecond=0)
@@ -123,6 +125,19 @@ async def test_claim_moves_all_rows_and_is_once(db: AsyncSession, ctx: Ctx) -> N
         count = select(func.count()).select_from(model).where(model.owner_id == un.id)
         assert (await db.execute(count)).scalar() == 0
     assert (await ctx.client.post("/me/claim")).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_claim_refreshes_the_admins_extra_field_cache(db: AsyncSession, ctx: Ctx) -> None:
+    admin = await make_user(db, "a", admin=True)
+    un = await _unclaimed(db)
+    assert await get_extra_fields(db, scope_for_user(admin.id), EntityType.spool) == []  # warms the cache
+    definition = '[{"key":"color","name":"Color","entity_type":"spool","field_type":"text","order":0}]'
+    db.add(_setting(un.id, "extra_fields_spool", definition))
+    await db.flush()
+    ctx.as_user(admin)
+    assert (await ctx.client.post("/me/claim")).status_code == 200
+    assert [f.key for f in await get_extra_fields(db, scope_for_user(admin.id), EntityType.spool)] == ["color"]
 
 
 @pytest.mark.asyncio

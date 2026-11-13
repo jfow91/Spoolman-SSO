@@ -12,6 +12,8 @@
 	let level = $state<KeyLevel>('edit');
 	let created = $state<{ key: string; url: string }>();
 	let dlg = $state<HTMLDialogElement>();
+	// Toasts sit under a modal <dialog> (top layer), so copy feedback is shown in it.
+	let copyStatus = $state('');
 
 	const fail = (e: unknown) => toasts.error(m['account.error']({ message: (e as Error).message }));
 	const refresh = () => listKeys().then((k) => (keys = k), fail);
@@ -50,9 +52,9 @@
 	async function copy(text: string) {
 		try {
 			await navigator.clipboard.writeText(text);
-			toasts.success(m['account.keys.copied']());
+			copyStatus = m['account.keys.copied']();
 		} catch (err) {
-			fail(err);
+			copyStatus = m['account.error']({ message: (err as Error).message });
 		}
 	}
 
@@ -102,7 +104,14 @@
 </div>
 
 {#if created}
-	<dialog bind:this={dlg} aria-labelledby="key-title" onclose={() => (created = undefined)}>
+	<dialog
+		bind:this={dlg}
+		aria-labelledby="key-title"
+		onclose={() => {
+			created = undefined;
+			copyStatus = '';
+		}}
+	>
 		<h2 id="key-title">{m['account.keys.dialogTitle']()}</h2>
 		<p>{m['account.keys.once']()}</p>
 		{#each [[m['account.keys.keyLabel'](), created.key], [m['account.keys.urlLabel'](), created.url]] as [label, value] (label)}
@@ -117,6 +126,7 @@
 				</Button>
 			</div>
 		{/each}
+		<p class="warn" role="status" aria-live="polite">{copyStatus}</p>
 		<p class="warn">{m['account.keys.warning']({ key: '<key>' })}</p>
 		<div class="foot"><Button onclick={() => dlg?.close()}>{m['buttons.close']()}</Button></div>
 	</dialog>

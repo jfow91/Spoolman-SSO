@@ -1,12 +1,15 @@
 <script lang="ts">
 	import Button from './Button.svelte';
 	import { claimData } from '$lib/api/account';
+	import { HttpError } from '$lib/api/http';
 	import { toasts } from '$lib/stores/toasts.svelte';
 	import * as m from '$lib/paraglide/messages';
 
 	// Shown once per page load; "Not now" only hides it until the next load.
 	let { onclose }: { onclose: () => void } = $props();
 	let busy = $state(false);
+	// Toasts sit under a modal <dialog> (top layer), so errors are shown in it.
+	let error = $state('');
 	let dlg = $state<HTMLDialogElement>();
 	$effect(() => dlg?.showModal());
 
@@ -18,8 +21,10 @@
 			// Everything on screen was loaded before the claim.
 			location.reload();
 		} catch (e) {
-			toasts.error(m['account.error']({ message: (e as Error).message }));
 			busy = false;
+			// 409: nothing (left) to claim, so there is nothing to offer.
+			if (e instanceof HttpError && e.status === 409) return dlg?.close();
+			error = m['account.error']({ message: (e as Error).message });
 		}
 	}
 </script>
@@ -27,6 +32,7 @@
 <dialog bind:this={dlg} aria-labelledby="claim-title" {onclose}>
 	<h2 id="claim-title">{m['account.claim.title']()}</h2>
 	<p>{m['account.claim.body']()}</p>
+	<p class="err" role="alert">{error}</p>
 	<div class="foot">
 		<Button variant="outline" disabled={busy} onclick={() => dlg?.close()}
 			>{m['account.claim.later']()}</Button
@@ -58,6 +64,13 @@
 		font-size: 13px;
 		line-height: 1.5;
 		color: var(--text-2);
+	}
+	.err {
+		color: var(--danger, #d33);
+		margin-top: 8px;
+	}
+	.err:empty {
+		display: none;
 	}
 	.foot {
 		display: flex;

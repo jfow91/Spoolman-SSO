@@ -21,6 +21,11 @@ test("creates key and sees URL form", async ({ page }) => {
   expect(key.length).toBeGreaterThan(8);
   await expect(dialog.getByLabel("URL form", { exact: true })).toHaveText(new RegExp(`/k/${key}/$`));
 
+  // Toasts sit under a modal dialog, so the copy confirmation must be inside it.
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await dialog.getByRole("button", { name: "Copy Key" }).click();
+  await expect(dialog.getByRole("status")).toHaveText("Copied.");
+
   await dialog.getByRole("button", { name: "Close" }).click();
   await expect(page.getByText("e2e bridge")).toBeVisible();
   await page.getByRole("button", { name: "Revoke" }).first().click();

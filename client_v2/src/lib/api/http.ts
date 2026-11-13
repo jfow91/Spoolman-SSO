@@ -164,3 +164,8 @@ export async function deleteJson<T = unknown>(path: string): Promise<T> {
 	const res = await ensureOk(await fetch(API_BASE + path, { method: 'DELETE' }), 'DELETE', path);
 	return (await res.json()) as T;
 }
+
+/** POST with no body, for actions that answer 204. */
+export async function postEmpty(path: string): Promise<void> {
+	await ensureOk(await fetch(API_BASE + path, { method: 'POST' }), 'POST', path);
+}

@@ -15,7 +15,8 @@ services:
       - ./data:/home/app/.local/share/spoolman
       - ./secrets:/run/secrets:ro
     environment:
-      - TZ=Europe/Stockholm
+      # Change to your own timezone.
+      - TZ=Australia/Perth
       # Required. The app refuses to start if any of these is missing.
       - SPOOLMAN_OIDC_ISSUER=https://id.example.com
       - SPOOLMAN_OIDC_CLIENT_ID=spoolman

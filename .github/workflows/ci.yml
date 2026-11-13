@@ -521,7 +521,7 @@ jobs:
   # alembic migrations) is slow, hence the generous retry budget.
   #
   test-multiarch-smoke:
-    needs: [build-arm64, build-armv7]
+    needs: [build-arm64, build-armv7, build-tester]
     strategy:
       fail-fast: false
       matrix:
@@ -575,7 +575,7 @@ jobs:
 
       - name: Stop Spoolman
         if: always()
-        run: docker rm -f spoolman-smoke
+        run: docker rm -f spoolman-smoke fake-oidc
   #
   # Release images to GHCR if tests pass
   # Don't run this for pull requests
@@ -702,7 +702,7 @@ jobs:
           cd /tmp/spoolman
           echo '{
             "project_name": "Spoolman",
-            "project_owner": "Donkie",
+            "project_owner": "${{ github.repository_owner }}",
             "version": "${{ github.ref_name }}"
           }' > release_info.json
 

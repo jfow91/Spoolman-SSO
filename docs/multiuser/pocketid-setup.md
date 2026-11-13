@@ -78,5 +78,7 @@ scrape_configs:
       - targets: ["spoolman:8000"]
 ```
 
+If Prometheus is not on the same Docker network, use `<unraid-ip>:7912` as the target.
+
 Series now carry an `owner` label (the display-name slug). Adding a label starts new series, so
 existing Grafana panels lose continuity at the upgrade.

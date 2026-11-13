@@ -2,7 +2,10 @@
 
 import httpx
 
-from .conftest import URL, DbType, get_db_type
+from .conftest import ADMIN_GROUP, BASE_URL, DbType, get_db_type, make_key
+
+# Backups cover every account, so only an admin may trigger one.
+URL = f"{BASE_URL}/k/{make_key('tester-admin', groups=[ADMIN_GROUP])}"
 
 
 def test_backup():
@@ -13,6 +16,13 @@ def test_backup():
     # Trigger backup
     result = httpx.post(f"{URL}/api/v1/backup")
     result.raise_for_status()
+
+
+def test_backup_refused_for_non_admin():
+    """Every database type: the admin check comes before the backup itself."""
+    result = httpx.post(f"{BASE_URL}/k/{make_key('tester-a')}/api/v1/backup")
+    assert result.status_code == 403
+    assert result.json() == {"message": "Admins only"}
 
 
 def test_repeated_backups_do_not_churn_the_history():

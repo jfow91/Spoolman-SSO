@@ -4,19 +4,22 @@
 
 import asyncio
 import logging
+from typing import Annotated
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 from starlette.responses import Response
 
 from spoolman import env, update_check
+from spoolman.access.principal import Principal, get_principal
+from spoolman.access.scope import Scope, get_scope
 from spoolman.database.database import backup_global_db
-from spoolman.exceptions import ItemNotFoundError
+from spoolman.exceptions import AccessDeniedError, ItemNotFoundError
 from spoolman.externaldb import get_external_db_name
 from spoolman.ws import websocket_manager
 
-from . import export, externaldb, field, filament, models, other, search, setting, spool, tag, vendor
+from . import account, export, externaldb, field, filament, models, other, search, setting, spool, tag, vendor
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,11 @@ async def itemnotfounderror_exception_handler(_request: Request, exc: ItemNotFou
         status_code=404,
         content={"message": exc.args[0]},
     )
+
+
+@app.exception_handler(AccessDeniedError)
+async def accessdeniederror_exception_handler(_request: Request, exc: AccessDeniedError) -> Response:
+    return JSONResponse(status_code=403, content={"message": exc.args[0]})
 
 
 # Add a general info endpoint
@@ -74,12 +82,15 @@ async def health() -> models.HealthCheck:
 # Add endpoint for triggering a db backup
 @app.post(
     "/backup",
-    description="Trigger a database backup. Only applicable for SQLite databases.",
+    description="Trigger a database backup. Only applicable for SQLite databases. Admins only.",
     response_model=models.BackupResponse,
-    responses={500: {"model": models.Message}},
+    responses={403: {"model": models.Message}, 500: {"model": models.Message}},
 )
-async def backup():  # noqa: ANN201
+async def backup(principal: Annotated[Principal, Depends(get_principal)]):  # noqa: ANN201
     """Trigger a database backup."""
+    # The backup covers, and rotates restore points for, every account on the instance.
+    if not principal.is_admin:
+        raise AccessDeniedError("Admins only")
     result = await backup_global_db()
     if result.path is None:
         return JSONResponse(
@@ -95,9 +106,10 @@ async def backup():  # noqa: ANN201
 )
 async def notify(
     websocket: WebSocket,
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
-    websocket_manager.connect((), websocket)
+    websocket_manager.connect((), websocket, scope)
     try:
         while True:
             await asyncio.sleep(0.5)
@@ -118,3 +130,4 @@ app.include_router(externaldb.router)
 app.include_router(export.router)
 app.include_router(search.router)
 app.include_router(tag.router)
+app.include_router(account.router)

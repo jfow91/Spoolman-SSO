@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import contains_eager, joinedload
 from sqlalchemy.sql.functions import coalesce
 
+from spoolman.access.scope import Scope, owned
 from spoolman.api.v1.models import (
     EventType,
     Spool,
@@ -59,6 +60,7 @@ def utc_timezone_naive(dt: datetime) -> datetime:
 async def create(
     *,
     db: AsyncSession,
+    scope: Scope,
     filament_id: int,
     remaining_weight: float | None = None,
     initial_weight: float | None = None,
@@ -80,7 +82,7 @@ async def create(
     is batching this write into a larger transaction (see spoolman.database.tag) and will
     commit and notify once, itself, when everything has succeeded.
     """
-    filament_item = await filament.get_by_id(db, filament_id)
+    filament_item = await filament.get_by_id(db, scope, filament_id)
 
     # Set spool_weight to spool_weight if spool_weight is not null and spool_weight not provided
     if spool_weight is None and filament_item.spool_weight is not None:
@@ -108,6 +110,7 @@ async def create(
         last_used = utc_timezone_naive(last_used)
 
     spool = models.Spool(
+        owner_id=scope.account_id,
         filament=filament_item,
         registered=datetime.utcnow().replace(microsecond=0),
         initial_weight=initial_weight,
@@ -136,13 +139,14 @@ async def create(
     return spool
 
 
-async def get_by_id(db: AsyncSession, spool_id: int) -> models.Spool:
+async def get_by_id(db: AsyncSession, scope: Scope, spool_id: int) -> models.Spool:
     """Get a spool object from the database by the unique ID."""
-    spool = await db.get(
+    stmt = owned(
+        sqlalchemy.select(models.Spool).where(models.Spool.id == spool_id),
         models.Spool,
-        spool_id,
-        options=[joinedload("*")],  # Load all nested objects as well
-    )
+        scope,
+    ).options(joinedload("*"))  # Load all nested objects as well
+    spool = (await db.execute(stmt)).unique().scalar_one_or_none()
     if spool is None:
         raise ItemNotFoundError(f"No spool with ID {spool_id} found.")
     return spool
@@ -151,6 +155,7 @@ async def get_by_id(db: AsyncSession, spool_id: int) -> models.Spool:
 async def find(  # noqa: C901
     *,
     db: AsyncSession,
+    scope: Scope,
     filament_name: str | None = None,
     filament_id: int | Sequence[int] | None = None,
     filament_material: str | None = None,
@@ -179,7 +184,7 @@ async def find(  # noqa: C901
     Returns a tuple containing the list of items and the total count of matching items.
     """
     stmt = _apply_spool_filters(
-        sqlalchemy.select(models.Spool),
+        owned(sqlalchemy.select(models.Spool), models.Spool, scope),
         filament_name=filament_name,
         filament_id=filament_id,
         filament_material=filament_material,
@@ -199,6 +204,7 @@ async def find(  # noqa: C901
 
     stmt = await apply_extra_field_filters_and_sort(
         db=db,
+        scope=scope,
         stmt=stmt,
         base_obj=models.Spool,
         entity_type=EntityType.spool,
@@ -207,6 +213,7 @@ async def find(  # noqa: C901
     )
     stmt = await apply_spool_related_extra_filters(
         db=db,
+        scope=scope,
         stmt=stmt,
         filament_filters=filament_extra_field_filters,
         vendor_filters=vendor_extra_field_filters,
@@ -413,6 +420,7 @@ def _blank_as_null(col: ColumnElement) -> ColumnElement:
 
 async def _resolve_group_by(
     db: AsyncSession,
+    scope: Scope,
     group_by: str,
 ) -> tuple[ColumnElement, ColumnElement, ExtraFieldJoin | None]:
     """Resolve a group_by into the column to group on, the column to title groups by, and any join.
@@ -421,7 +429,7 @@ async def _resolve_group_by(
     lives in its own table, so it comes with a join the caller has to apply once the SELECT exists.
     """
     if group_by.startswith(EXTRA_FIELD_PREFIX):
-        field_key = _extra_field_key(await get_extra_fields(db, EntityType.spool), group_by)
+        field_key = _extra_field_key(await get_extra_fields(db, scope, EntityType.spool), group_by)
         join = extra_field_join(EntityType.spool, field_key)
         # The value is the group's title as well; there is no separate entity to name it.
         col = _blank_as_null(join.value)
@@ -569,6 +577,7 @@ def _reject_spool_scoped_filters(group_by: str, filters: dict[str, object]) -> N
 
 def _entities_with_their_spools_stmt(
     *,
+    scope: Scope,
     group_by: str,
     columns: tuple[ColumnElement, ...],
     allow_archived: bool,
@@ -597,19 +606,24 @@ def _entities_with_their_spools_stmt(
         # filaments is a row of NULLs for both, which the aggregates score as zero. No FULL OUTER
         # JOIN needed, and none available on MySQL. Filament filters then land in the WHERE and so
         # drop a vendor with no matching filament -- "the manufacturers of these filaments".
-        stmt = (
+        # A vendor's filaments, and their spools, are always in the vendor's account.
+        stmt = owned(
             sqlalchemy.select(models.Vendor.id.label("group_key"), *columns)
             .select_from(models.Vendor)
             .outerjoin(models.Filament, models.Filament.vendor_id == models.Vendor.id)
-            .outerjoin(models.Spool, sqlalchemy.and_(*join_cond))
+            .outerjoin(models.Spool, sqlalchemy.and_(*join_cond)),
+            models.Vendor,
+            scope,
         )
         filament_id_column, vendor_id_column = models.Filament.id, models.Vendor.id
     else:
-        stmt = (
+        stmt = owned(
             sqlalchemy.select(models.Filament.id.label("group_key"), *columns)
             .select_from(models.Filament)
             .outerjoin(models.Spool, sqlalchemy.and_(*join_cond))
-            .join(models.Filament.vendor, isouter=True)
+            .join(models.Filament.vendor, isouter=True),
+            models.Filament,
+            scope,
         )
         filament_id_column, vendor_id_column = models.Filament.id, models.Filament.vendor_id
     return _apply_filament_filters(
@@ -660,6 +674,7 @@ _EXTRA_SORT_PREFIXES = (
 
 async def _entity_sort_exprs(
     db: AsyncSession,
+    scope: Scope,
     stmt: sqlalchemy.Select,
     sort_by: dict[str, SortOrder] | None,
 ) -> tuple[sqlalchemy.Select, dict[str, list[ColumnElement]]]:
@@ -689,7 +704,7 @@ async def _entity_sort_exprs(
         prefix, entity_type = extra
         extra_key = key.removeprefix(prefix)
         if entity_type not in definitions:
-            definitions[entity_type] = {f.key: f for f in await get_extra_fields(db, entity_type)}
+            definitions[entity_type] = {f.key: f for f in await get_extra_fields(db, scope, entity_type)}
         field = definitions[entity_type].get(extra_key)
         if field is None:
             continue
@@ -702,6 +717,7 @@ async def _entity_sort_exprs(
 async def find_groups(
     *,
     db: AsyncSession,
+    scope: Scope,
     group_by: str,
     filament_name: str | None = None,
     filament_id: int | Sequence[int] | None = None,
@@ -782,6 +798,7 @@ async def find_groups(
         )
         group_col, title_col = EMPTY_GROUP_COLUMNS[group_by]
         stmt = _entities_with_their_spools_stmt(
+            scope=scope,
             group_by=group_by,
             columns=columns,
             allow_archived=allow_archived,
@@ -793,15 +810,16 @@ async def find_groups(
             vendor_id=vendor_id,
         )
     else:
-        group_col, title_col, extra_join = await _resolve_group_by(db, group_by)
+        group_col, title_col, extra_join = await _resolve_group_by(db, scope, group_by)
         stmt = _apply_spool_filters(
-            sqlalchemy.select(group_col.label("group_key"), *columns),
+            owned(sqlalchemy.select(group_col.label("group_key"), *columns), models.Spool, scope),
             **spool_filters,
         )
         if extra_join is not None:
             stmt = extra_join.apply(stmt, models.Spool.id)
         stmt = await apply_extra_field_filters_and_sort(
             db=db,
+            scope=scope,
             stmt=stmt,
             base_obj=models.Spool,
             entity_type=EntityType.spool,
@@ -815,6 +833,7 @@ async def find_groups(
     # filter on an extra field also drops a filament-less vendor (its Filament.id is NULL).
     stmt = await apply_spool_related_extra_filters(
         db=db,
+        scope=scope,
         stmt=stmt,
         filament_filters=filament_extra_field_filters,
         vendor_filters=vendor_extra_field_filters,
@@ -854,7 +873,7 @@ async def find_groups(
         "group.vendor_name": [func.min(models.Vendor.name), func.min(models.Vendor.id)],
         "group.filament_count": [func.count(sqlalchemy.distinct(models.Filament.id))],
     }
-    stmt, entity_exprs = await _entity_sort_exprs(db, stmt, sort_by)
+    stmt, entity_exprs = await _entity_sort_exprs(db, scope, stmt, sort_by)
     order_exprs.update(entity_exprs)
     stmt = _order_groups(stmt, order_exprs, sort_by, default_expr=func.min(title_col), group_col=group_col)
 
@@ -869,14 +888,14 @@ async def find_groups(
     filament_map: dict[int, models.Filament] = {}
     vendor_map: dict[int, models.Vendor] = {}
     if group_by == "filament" and keys:
-        fstmt = (
-            sqlalchemy.select(models.Filament)
-            .where(models.Filament.id.in_(keys))
-            .options(joinedload(models.Filament.vendor))
-        )
+        fstmt = owned(
+            sqlalchemy.select(models.Filament).where(models.Filament.id.in_(keys)),
+            models.Filament,
+            scope,
+        ).options(joinedload(models.Filament.vendor))
         filament_map = {f.id: f for f in (await db.execute(fstmt)).unique().scalars().all()}
     elif group_by == "vendor" and keys:
-        vstmt = sqlalchemy.select(models.Vendor).where(models.Vendor.id.in_(keys))
+        vstmt = owned(sqlalchemy.select(models.Vendor).where(models.Vendor.id.in_(keys)), models.Vendor, scope)
         vendor_map = {v.id: v for v in (await db.execute(vstmt)).unique().scalars().all()}
 
     results = [
@@ -895,6 +914,7 @@ async def find_groups(
     if preview:
         await _attach_previews(
             db=db,
+            scope=scope,
             group_by=group_by,
             results=results,
             keys=keys,
@@ -914,6 +934,7 @@ async def find_groups(
 async def _attach_previews(
     *,
     db: AsyncSession,
+    scope: Scope,
     group_by: str,
     results: list[SpoolGroupResult],
     keys: list[int],
@@ -933,6 +954,7 @@ async def _attach_previews(
     if group_by == "filament":
         await _attach_spool_previews(
             db=db,
+            scope=scope,
             results=results,
             keys=keys,
             spool_filters=spool_filters,
@@ -943,6 +965,7 @@ async def _attach_previews(
     elif group_by == "vendor":
         await _attach_filament_previews(
             db=db,
+            scope=scope,
             results=results,
             keys=keys,
             spool_filters=spool_filters,
@@ -954,6 +977,7 @@ async def _attach_previews(
 async def _attach_spool_previews(
     *,
     db: AsyncSession,
+    scope: Scope,
     results: list[SpoolGroupResult],
     keys: list[int],
     spool_filters: dict[str, Any],
@@ -966,17 +990,22 @@ async def _attach_spool_previews(
     # disagree with `spool_count`: whatever the group counted is what it may show. Only the
     # columns the preview needs are selected, not whole ORM spools.
     stmt = _apply_spool_filters(
-        sqlalchemy.select(
-            models.Spool.id,
-            models.Spool.filament_id,
-            models.Spool.initial_weight,
-            models.Spool.used_weight,
-            models.Filament.weight,
+        owned(
+            sqlalchemy.select(
+                models.Spool.id,
+                models.Spool.filament_id,
+                models.Spool.initial_weight,
+                models.Spool.used_weight,
+                models.Filament.weight,
+            ),
+            models.Spool,
+            scope,
         ),
         **spool_filters,
     ).where(models.Spool.filament_id.in_(keys))
     stmt = await apply_extra_field_filters_and_sort(
         db=db,
+        scope=scope,
         stmt=stmt,
         base_obj=models.Spool,
         entity_type=EntityType.spool,
@@ -985,6 +1014,7 @@ async def _attach_spool_previews(
     )
     stmt = await apply_spool_related_extra_filters(
         db=db,
+        scope=scope,
         stmt=stmt,
         filament_filters=filament_extra_field_filters,
         vendor_filters=vendor_extra_field_filters,
@@ -1012,6 +1042,7 @@ async def _attach_spool_previews(
 async def _attach_filament_previews(
     *,
     db: AsyncSession,
+    scope: Scope,
     results: list[SpoolGroupResult],
     keys: list[int],
     spool_filters: dict[str, Any],
@@ -1024,13 +1055,17 @@ async def _attach_filament_previews(
     # matching spool: the preview is a swatch strip for the manufacturer, and `filament_count`
     # is the number that says how many actually hold stock.
     stmt = _apply_filament_filters(
-        sqlalchemy.select(
-            models.Filament.id,
-            models.Filament.vendor_id,
-            models.Filament.color_hex,
-            models.Filament.multi_color_hexes,
-            models.Filament.multi_color_direction,
-        ).join(models.Filament.vendor, isouter=True),
+        owned(
+            sqlalchemy.select(
+                models.Filament.id,
+                models.Filament.vendor_id,
+                models.Filament.color_hex,
+                models.Filament.multi_color_hexes,
+                models.Filament.multi_color_direction,
+            ).join(models.Filament.vendor, isouter=True),
+            models.Filament,
+            scope,
+        ),
         filament_id_column=models.Filament.id,
         filament_name=spool_filters["filament_name"],
         filament_id=spool_filters["filament_id"],
@@ -1041,6 +1076,7 @@ async def _attach_filament_previews(
     ).where(models.Filament.vendor_id.in_(keys))
     stmt = await apply_spool_related_extra_filters(
         db=db,
+        scope=scope,
         stmt=stmt,
         filament_filters=filament_extra_field_filters,
         vendor_filters=vendor_extra_field_filters,
@@ -1068,14 +1104,15 @@ async def _attach_filament_previews(
 async def update(
     *,
     db: AsyncSession,
+    scope: Scope,
     spool_id: int,
     data: dict,
 ) -> models.Spool:
     """Update the fields of a spool object."""
-    spool = await get_by_id(db, spool_id)
+    spool = await get_by_id(db, scope, spool_id)
     for k, v in data.items():
         if k == "filament_id":
-            spool.filament = await filament.get_by_id(db, v)
+            spool.filament = await filament.get_by_id(db, scope, v)
             # If there is no initial_weight, calculate it from the filament weight
             if spool.initial_weight is None and spool.filament.weight is not None:
                 spool.initial_weight = spool.filament.weight
@@ -1100,9 +1137,9 @@ async def update(
     return spool
 
 
-async def delete(db: AsyncSession, spool_id: int) -> None:
+async def delete(db: AsyncSession, scope: Scope, spool_id: int) -> None:
     """Delete a spool object."""
-    spool = await get_by_id(db, spool_id)
+    spool = await get_by_id(db, scope, spool_id)
     await db.delete(spool)
     # Commit before notifying so the deletion is durable and visible to subsequent
     # requests; post-commit notification must be the last, infallible step.
@@ -1110,25 +1147,29 @@ async def delete(db: AsyncSession, spool_id: int) -> None:
     await spool_changed(spool, EventType.DELETED)
 
 
-async def clear_extra_field(db: AsyncSession, key: str) -> None:
-    """Delete all extra fields with a specific key."""
+async def clear_extra_field(db: AsyncSession, scope: Scope, key: str) -> None:
+    """Delete the account's extra field values with a specific key."""
     await db.execute(
-        sqlalchemy.delete(models.SpoolField).where(models.SpoolField.key == key),
+        sqlalchemy.delete(models.SpoolField).where(
+            models.SpoolField.key == key,
+            models.SpoolField.spool_id.in_(owned(sqlalchemy.select(models.Spool.id), models.Spool, scope)),
+        ),
     )
     await db.commit()
 
 
-async def use_weight_safe(db: AsyncSession, spool_id: int, weight: float) -> None:
+async def use_weight_safe(db: AsyncSession, scope: Scope, spool_id: int, weight: float) -> None:
     """Consume filament from a spool by weight in a way that is safe against race conditions.
 
     Args:
         db (AsyncSession): Database session
+        scope (Scope): The account the spool must belong to
         spool_id (int): Spool ID
         weight (float): Filament weight to consume, in grams
 
     """
     await db.execute(
-        sqlalchemy.update(models.Spool)
+        owned(sqlalchemy.update(models.Spool), models.Spool, scope)
         .where(models.Spool.id == spool_id)
         .values(
             used_weight=case(
@@ -1139,7 +1180,7 @@ async def use_weight_safe(db: AsyncSession, spool_id: int, weight: float) -> Non
     )
 
 
-async def use_weight(db: AsyncSession, spool_id: int, weight: float) -> models.Spool:
+async def use_weight(db: AsyncSession, scope: Scope, spool_id: int, weight: float) -> models.Spool:
     """Consume filament from a spool by weight.
 
     Increases the used_weight attribute of the spool.
@@ -1147,6 +1188,7 @@ async def use_weight(db: AsyncSession, spool_id: int, weight: float) -> models.S
 
     Args:
         db (AsyncSession): Database session
+        scope (Scope): The account the spool must belong to
         spool_id (int): Spool ID
         weight (float): Filament weight to consume, in grams
 
@@ -1154,9 +1196,9 @@ async def use_weight(db: AsyncSession, spool_id: int, weight: float) -> models.S
         models.Spool: Updated spool object
 
     """
-    await use_weight_safe(db, spool_id, weight)
+    await use_weight_safe(db, scope, spool_id, weight)
 
-    spool = await get_by_id(db, spool_id)
+    spool = await get_by_id(db, scope, spool_id)
 
     if spool.first_used is None:
         spool.first_used = datetime.utcnow().replace(microsecond=0)
@@ -1167,7 +1209,7 @@ async def use_weight(db: AsyncSession, spool_id: int, weight: float) -> models.S
     return spool
 
 
-async def use_length(db: AsyncSession, spool_id: int, length: float) -> models.Spool:
+async def use_length(db: AsyncSession, scope: Scope, spool_id: int, length: float) -> models.Spool:
     """Consume filament from a spool by length.
 
     Increases the used_weight attribute of the spool.
@@ -1175,6 +1217,7 @@ async def use_length(db: AsyncSession, spool_id: int, length: float) -> models.S
 
     Args:
         db (AsyncSession): Database session
+        scope (Scope): The account the spool must belong to
         spool_id (int): Spool ID
         length (float): Length of filament to consume, in mm
 
@@ -1184,9 +1227,13 @@ async def use_length(db: AsyncSession, spool_id: int, length: float) -> models.S
     """
     # Get filament diameter and density
     result = await db.execute(
-        sqlalchemy.select(models.Filament.diameter, models.Filament.density)
-        .join(models.Spool, models.Spool.filament_id == models.Filament.id)
-        .where(models.Spool.id == spool_id),
+        owned(
+            sqlalchemy.select(models.Filament.diameter, models.Filament.density)
+            .join(models.Spool, models.Spool.filament_id == models.Filament.id)
+            .where(models.Spool.id == spool_id),
+            models.Spool,
+            scope,
+        ),
     )
     try:
         filament_info = result.one()
@@ -1199,10 +1246,10 @@ async def use_length(db: AsyncSession, spool_id: int, length: float) -> models.S
         diameter=filament_info[0],
         density=filament_info[1],
     )
-    await use_weight_safe(db, spool_id, weight)
+    await use_weight_safe(db, scope, spool_id, weight)
 
     # Get spool with new weight and update first_used and last_used
-    spool = await get_by_id(db, spool_id)
+    spool = await get_by_id(db, scope, spool_id)
 
     if spool.first_used is None:
         spool.first_used = datetime.utcnow().replace(microsecond=0)
@@ -1213,7 +1260,7 @@ async def use_length(db: AsyncSession, spool_id: int, length: float) -> models.S
     return spool
 
 
-async def measure(db: AsyncSession, spool_id: int, weight: float) -> models.Spool:
+async def measure(db: AsyncSession, scope: Scope, spool_id: int, weight: float) -> models.Spool:
     """Record usage based on current gross weight of spool.
 
     Increases the used_weight attribute of the spool.
@@ -1221,6 +1268,7 @@ async def measure(db: AsyncSession, spool_id: int, weight: float) -> models.Spoo
 
     Args:
         db (AsyncSession): Database session
+        scope (Scope): The account the spool must belong to
         spool_id (int): Spool ID
         weight (float): Length of filament to consume, in mm
 
@@ -1229,15 +1277,20 @@ async def measure(db: AsyncSession, spool_id: int, weight: float) -> models.Spoo
 
     """
     spool_result = await db.execute(
-        sqlalchemy.select(models.Spool.initial_weight, models.Spool.used_weight, models.Spool.spool_weight).where(
-            models.Spool.id == spool_id,
+        owned(
+            sqlalchemy.select(models.Spool.initial_weight, models.Spool.used_weight, models.Spool.spool_weight).where(
+                models.Spool.id == spool_id,
+            ),
+            models.Spool,
+            scope,
         ),
     )
 
     try:
         spool_info = spool_result.one()
     except NoResultFound as exc:
-        raise SpoolMeasureError("Spool not found.") from exc
+        # A 404 like every other spool endpoint, so another account's spool is indistinguishable from none.
+        raise ItemNotFoundError(f"No spool with ID {spool_id} found.") from exc
 
     initial_weight = spool_info[0]
     spool_weight = spool_info[2]
@@ -1285,7 +1338,7 @@ async def measure(db: AsyncSession, spool_id: int, weight: float) -> models.Spoo
 
     # if the measurement is greater than the initial weight, set the initial weight to the measurement
     if weight > initial_gross_weight:
-        return await reset_initial_weight(db, spool_id, weight - spool_weight)
+        return await reset_initial_weight(db, scope, spool_id, weight - spool_weight)
 
     # Calculate the current net weight
     current_use = initial_gross_weight - spool_info[1]
@@ -1297,15 +1350,16 @@ async def measure(db: AsyncSession, spool_id: int, weight: float) -> models.Spoo
     if (initial_gross_weight - weight_to_use) < spool_weight:
         weight_to_use = current_use - spool_weight
 
-    return await use_weight(db, spool_id, weight_to_use)
+    return await use_weight(db, scope, spool_id, weight_to_use)
 
 
 async def find_locations(
     *,
     db: AsyncSession,
+    scope: Scope,
 ) -> list[str]:
     """Find a list of spool locations by searching for distinct values in the spool table."""
-    stmt = sqlalchemy.select(models.Spool.location).distinct()
+    stmt = owned(sqlalchemy.select(models.Spool.location), models.Spool, scope).distinct()
     rows = await db.execute(stmt)
     return [row[0] for row in rows.all() if row[0] is not None]
 
@@ -1313,9 +1367,10 @@ async def find_locations(
 async def find_lot_numbers(
     *,
     db: AsyncSession,
+    scope: Scope,
 ) -> list[str]:
     """Find a list of spool lot numbers by searching for distinct values in the spool table."""
-    stmt = sqlalchemy.select(models.Spool.lot_nr).distinct()
+    stmt = owned(sqlalchemy.select(models.Spool.lot_nr), models.Spool, scope).distinct()
     rows = await db.execute(stmt)
     return [row[0] for row in rows.all() if row[0] is not None]
 
@@ -1331,15 +1386,16 @@ async def spool_changed(spool: models.Spool, typ: EventType) -> None:
                 date=datetime.utcnow(),
                 payload=Spool.from_db(spool),
             ),
+            spool.owner_id,
         )
     except Exception:
         # Important to have a catch-all here since we don't want to stop the call if this fails.
         logger.exception("Failed to send websocket message")
 
 
-async def reset_initial_weight(db: AsyncSession, spool_id: int, weight: float) -> models.Spool:
+async def reset_initial_weight(db: AsyncSession, scope: Scope, spool_id: int, weight: float) -> models.Spool:
     """Reset inital weight to new weight and used_weight to 0."""
-    spool = await get_by_id(db, spool_id)
+    spool = await get_by_id(db, scope, spool_id)
 
     spool.initial_weight = weight
     spool.used_weight = 0
@@ -1351,12 +1407,15 @@ async def reset_initial_weight(db: AsyncSession, spool_id: int, weight: float) -
 async def rename_location(
     *,
     db: AsyncSession,
+    scope: Scope,
     current_name: str,
     new_name: str,
 ) -> None:
     """Rename all spools with the current location name to the new name."""
     await db.execute(
-        sqlalchemy.update(models.Spool).where(models.Spool.location == current_name).values(location=new_name),
+        owned(sqlalchemy.update(models.Spool), models.Spool, scope)
+        .where(models.Spool.location == current_name)
+        .values(location=new_name),
     )
     await db.commit()
 
@@ -1364,6 +1423,7 @@ async def rename_location(
 async def rename_field_value(
     *,
     db: AsyncSession,
+    scope: Scope,
     field: str,
     value: str,
     new_value: str,
@@ -1390,9 +1450,13 @@ async def rename_field_value(
     if field == "location":
         if len(new_value) > LOCATION_MAX_LENGTH:
             raise ValueError(f"A location can be at most {LOCATION_MAX_LENGTH} characters.")
-        stmt = sqlalchemy.update(models.Spool).where(models.Spool.location == value).values(location=new_value)
+        stmt = (
+            owned(sqlalchemy.update(models.Spool), models.Spool, scope)
+            .where(models.Spool.location == value)
+            .values(location=new_value)
+        )
     elif field.startswith(EXTRA_FIELD_PREFIX):
-        field_key = _extra_field_key(await get_extra_fields(db, EntityType.spool), field)
+        field_key = _extra_field_key(await get_extra_fields(db, scope, EntityType.spool), field)
         # Match on the DB-decoded scalar, so which JSON encoding wrote the value doesn't matter;
         # store the new one the way the rest of the API does.
         stmt = (
@@ -1401,6 +1465,7 @@ async def rename_field_value(
                 sqlalchemy.and_(
                     models.SpoolField.key == field_key,
                     extra_field_value_text(models.SpoolField.value) == value,
+                    models.SpoolField.spool_id.in_(owned(sqlalchemy.select(models.Spool.id), models.Spool, scope)),
                 ),
             )
             .values(value=json.dumps(new_value, ensure_ascii=False))

@@ -18,6 +18,16 @@ services:
       timeout: 5s
       retries: 30
 
+  # Fake PocketID. Its issuer name is only resolvable inside the compose network, so
+  # the test helper reaches it through the published port; see signIn in
+  # tests/fixtures.ts. Keep the port at 9000.
+  fake-oidc:
+    build:
+      context: ..
+      dockerfile: tests_integration/fake_oidc/Dockerfile
+    ports:
+      - "9000:9000"
+
   spoolman:
     image: donkie/spoolman:test
     environment:
@@ -29,6 +39,12 @@ services:
       - SPOOLMAN_DB_PASSWORD=spoolman
       - SPOOLMAN_LOGGING_LEVEL=INFO
       - TZ=Europe/Stockholm
+      - SPOOLMAN_OIDC_ISSUER=http://fake-oidc:9000
+      - SPOOLMAN_OIDC_CLIENT_ID=spoolman
+      - SPOOLMAN_OIDC_CLIENT_SECRET=test-secret
+      # Must be the address the browser uses, or the redirect URI will not match.
+      - SPOOLMAN_PUBLIC_URL=http://localhost:${SPOOLMAN_HOST_PORT:-8001}
+      - SPOOLMAN_SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
     ports:
       # Host port is configurable so the suite can avoid clashing with a
       # locally running Spoolman — and defaults one above the legacy suite's
@@ -47,3 +63,5 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      fake-oidc:
+        condition: service_started

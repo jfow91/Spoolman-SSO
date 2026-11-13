@@ -12,11 +12,12 @@ from pydantic import BaseModel, Field
 from pydantic import ValidationError as PydanticValidationError
 
 from spoolman.database import setting as db_setting
-from spoolman.exceptions import ItemNotFoundError
 from spoolman.settings import parse_setting
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from spoolman.access.scope import Scope
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,8 @@ def validate_extra_field_dict(all_fields: list[ExtraField], fields_input: dict[s
             raise ValueError(f"Invalid extra field for key {key}: {e!s}") from None
 
 
-extra_field_cache: dict[EntityType, list[ExtraField]] = {}
+# Keyed by (account id, entity type): every account defines its own extra fields.
+extra_field_cache: dict[tuple[int, EntityType], list[ExtraField]] = {}
 
 # Settings named extra_fields_<entity> hold the serialized registry for that entity type.
 _EXTRA_FIELDS_SETTING_PREFIX = "extra_fields_"
@@ -242,48 +244,46 @@ def validate_extra_field_setting(key: str, value: str) -> None:
         raise ValueError(f"Setting {key} contains duplicate extra field keys.")
 
 
-def invalidate_extra_field_cache(key: str) -> None:
-    """Drop the cached extra fields for the entity type a setting key belongs to.
+def invalidate_extra_field_cache(scope: Scope, key: str) -> None:
+    """Drop the account's cached extra fields for the entity type a setting key belongs to.
 
     Does nothing for any other setting key.
 
     Args:
+        scope: The account whose setting was written.
         key: The setting key that was written.
 
     """
     entity_type = entity_type_of_setting(key)
     if entity_type is not None:
-        extra_field_cache.pop(entity_type, None)
+        extra_field_cache.pop((scope.account_id, entity_type), None)
         logger.info("Extra field cache for entity type %s invalidated.", entity_type.name)
 
 
-async def get_extra_fields(db: AsyncSession, entity_type: EntityType) -> list[ExtraField]:
-    """Get all extra fields for a specific entity type."""
-    if entity_type in extra_field_cache:
-        return extra_field_cache[entity_type]
+async def get_extra_fields(db: AsyncSession, scope: Scope, entity_type: EntityType) -> list[ExtraField]:
+    """Get the account's extra fields for a specific entity type."""
+    cache_key = (scope.account_id, entity_type)
+    if cache_key in extra_field_cache:
+        return extra_field_cache[cache_key]
 
     setting_def = parse_setting(f"extra_fields_{entity_type.name}")
-    try:
-        setting = await db_setting.get(db, setting_def)
-        setting_value = setting.value
-    except ItemNotFoundError:
-        setting_value = setting_def.default
-
-    setting_array = json.loads(setting_value)
+    setting_array = json.loads((await db_setting.get(db, scope, setting_def)).value)
     if not isinstance(setting_array, list):
         logger.warning("Setting %s is not a list, using default.", setting_def.key)
         setting_array = []
 
     fields = [ExtraField.parse_obj(obj) for obj in setting_array]
-    extra_field_cache[entity_type] = fields
+    extra_field_cache[cache_key] = fields
     return fields
 
 
-async def add_or_update_extra_field(db: AsyncSession, entity_type: EntityType, extra_field: ExtraField) -> None:
-    """Add or update an extra field for a specific entity type."""
+async def add_or_update_extra_field(
+    db: AsyncSession, scope: Scope, entity_type: EntityType, extra_field: ExtraField
+) -> None:
+    """Add or update one of the account's extra fields for a specific entity type."""
     validate_extra_field(extra_field)
 
-    extra_fields = await get_extra_fields(db, entity_type)
+    extra_fields = await get_extra_fields(db, scope, entity_type)
     existing_field = next((field for field in extra_fields if field.key == extra_field.key), None)
     if existing_field is not None:
         if existing_field.field_type != extra_field.field_type:
@@ -306,7 +306,8 @@ async def add_or_update_extra_field(db: AsyncSession, entity_type: EntityType, e
     extra_fields.append(extra_field)
 
     setting_def = parse_setting(f"extra_fields_{entity_type.name}")
-    await db_setting.update(db=db, definition=setting_def, value=json.dumps(jsonable_encoder(extra_fields)))
+    value = json.dumps(jsonable_encoder(extra_fields))
+    await db_setting.update(db=db, scope=scope, definition=setting_def, value=value)
 
-    extra_field_cache[entity_type] = extra_fields
+    extra_field_cache[(scope.account_id, entity_type)] = extra_fields
     logger.info("Added/updated extra field %s for entity type %s.", extra_field.key, entity_type.name)

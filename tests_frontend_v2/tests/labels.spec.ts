@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
-import { test, expect } from "./fixtures";
+import { test, expect, signIn } from "./fixtures";
 import { createSpoolViaModal, navTab, onlyVisible, openApp, unique } from "./helpers";
 
 /**
@@ -30,6 +30,7 @@ test.afterAll(async ({ browser }) => {
   const page = await browser.newPage();
   try {
     await page.addInitScript(() => window.localStorage.setItem("PARAGLIDE_LOCALE", "en"));
+    await signIn(page.context().request);
     await openApp(page);
     await navTab(page, "Labels", "Labels | Spoolman");
 

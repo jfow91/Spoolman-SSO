@@ -61,6 +61,7 @@ def derive_reader_id(client_host: str | None) -> str:
 class Reader:
     """A reader that has reported a scan."""
 
+    account_id: int
     reader_id: str
     name: str | None
     last_seen: datetime
@@ -88,8 +89,9 @@ class ScanRelay:
         # (uid, reader_id, match) -> when it was last broadcast. The match is part of the key
         # because it is part of the answer: a repeat is only a repeat while the scan still
         # resolves to the same thing.
-        self._last_broadcast: dict[tuple[str, str, tuple[str, int] | None], datetime] = {}
-        self._readers: dict[str, Reader] = {}
+        self._last_broadcast: dict[tuple[int, str, str, tuple[str, int] | None], datetime] = {}
+        # Keyed by (account_id, reader_id): two accounts' readers may share a derived id.
+        self._readers: dict[tuple[int, str], Reader] = {}
         # Scans arrive on the event loop, but the loop is not the only thing that can touch
         # this: pruning walks the dicts while a scan may be inserting into them. A plain lock
         # is enough and is never held across an await.
@@ -97,6 +99,7 @@ class ScanRelay:
 
     def register(
         self,
+        account_id: int,
         reader_id: str,
         name: str | None,
         uid: str | None = None,
@@ -110,10 +113,11 @@ class ScanRelay:
         with self._lock:
             # Popping first re-inserts at the end, so the dict stays ordered least- to
             # most-recently-seen and eviction can drop from the front.
-            existing = self._readers.pop(reader_id, None)
+            existing = self._readers.pop((account_id, reader_id), None)
             # A reader that stops sending a name keeps the one it last gave, so a scan from a
             # trimmed-down agent doesn't blank the label in someone's dropdown.
-            self._readers[reader_id] = Reader(
+            self._readers[(account_id, reader_id)] = Reader(
+                account_id=account_id,
                 reader_id=reader_id,
                 name=name if name is not None else (existing.name if existing else None),
                 last_seen=now,
@@ -127,6 +131,7 @@ class ScanRelay:
 
     def should_broadcast(
         self,
+        account_id: int,
         uid: str,
         reader_id: str,
         match: tuple[str, int] | None,
@@ -145,7 +150,7 @@ class ScanRelay:
         every subscriber that trusts the broadcast still showing "unknown tag".
         """
         now = now or datetime.now(tz=timezone.utc)
-        key = (uid, reader_id, match)
+        key = (account_id, uid, reader_id, match)
         with self._lock:
             self._prune_debounce(now)
             last = self._last_broadcast.get(key)
@@ -156,8 +161,8 @@ class ScanRelay:
                 self._last_broadcast.pop(next(iter(self._last_broadcast)))
             return True
 
-    def readers(self, now: datetime | None = None) -> list[Reader]:
-        """List the readers seen within the TTL, most recently seen first.
+    def readers(self, account_id: int, now: datetime | None = None) -> list[Reader]:
+        """List the account's readers seen within the TTL, most recently seen first.
 
         Eviction happens here rather than on a timer: there is no background task to start, no
         lifecycle hook to register, and nothing to shut down cleanly.
@@ -165,13 +170,17 @@ class ScanRelay:
         now = now or datetime.now(tz=timezone.utc)
         with self._lock:
             self._prune_readers(now)
-            return sorted(self._readers.values(), key=lambda reader: reader.last_seen, reverse=True)
+            return sorted(
+                (r for r in self._readers.values() if r.account_id == account_id),
+                key=lambda reader: reader.last_seen,
+                reverse=True,
+            )
 
     def _prune_readers(self, now: datetime) -> None:
         """Drop readers past their TTL. Caller holds the lock."""
         cutoff = now - self.reader_ttl
-        for reader_id in [rid for rid, reader in self._readers.items() if reader.last_seen < cutoff]:
-            del self._readers[reader_id]
+        for key in [k for k, reader in self._readers.items() if reader.last_seen < cutoff]:
+            del self._readers[key]
 
     def _prune_debounce(self, now: datetime) -> None:
         """Drop debounce entries older than the window. Caller holds the lock."""

@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from spoolman.access.scope import Scope, get_scope
 from spoolman.api.v1.models import (
     Filament,
     SearchResultFilament,
@@ -50,6 +51,7 @@ router = APIRouter(
 async def search_endpoint(
     *,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     query: Annotated[
         str,
         Query(
@@ -104,6 +106,7 @@ async def search_endpoint(
 ) -> SearchResults:
     result = await search.search(
         db=db,
+        scope=scope,
         query=query,
         color_similarity_threshold=color_similarity_threshold,
         limit=limit,

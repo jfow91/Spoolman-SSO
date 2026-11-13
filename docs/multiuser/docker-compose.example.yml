@@ -1,0 +1,30 @@
+# Spoolman-SSO with PocketID sign-in. Works as-is on Unraid (Compose Manager) and plain Docker Compose.
+# Secrets are read from files so they stay out of the compose file; create them first, e.g.
+#   mkdir -p secrets
+#   openssl rand -hex 32 > secrets/session_secret       # at least 32 bytes
+#   printf '%s' '<client secret from PocketID>' > secrets/oidc_client_secret
+#   openssl rand -hex 32 > secrets/metrics_token        # only if you scrape /metrics
+services:
+  spoolman:
+    image: ghcr.io/jfow91/spoolman-sso:latest
+    restart: unless-stopped
+    ports:
+      - "7912:8000"
+    volumes:
+      # SQLite database and backups. On Unraid use e.g. /mnt/user/appdata/spoolman.
+      - ./data:/home/app/.local/share/spoolman
+      - ./secrets:/run/secrets:ro
+    environment:
+      # Change to your own timezone.
+      - TZ=Australia/Perth
+      # Required. The app refuses to start if any of these is missing.
+      - SPOOLMAN_OIDC_ISSUER=https://id.example.com
+      - SPOOLMAN_OIDC_CLIENT_ID=spoolman
+      - SPOOLMAN_OIDC_CLIENT_SECRET_FILE=/run/secrets/oidc_client_secret
+      # The address people use in the browser. Use https:// behind a TLS proxy.
+      - SPOOLMAN_PUBLIC_URL=https://spoolman.example.com
+      - SPOOLMAN_SESSION_SECRET_FILE=/run/secrets/session_secret
+      # Optional.
+      - SPOOLMAN_OIDC_ADMIN_GROUP=spoolman_admins
+      #- SPOOLMAN_BASE_PATH=/spoolman
+      #- SPOOLMAN_METRICS_TOKEN_FILE=/run/secrets/metrics_token

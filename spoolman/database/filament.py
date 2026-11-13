@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import contains_eager, joinedload
 
+from spoolman.access.scope import Scope, owned
 from spoolman.api.v1.models import EventType, Filament, FilamentEvent, MultiColorDirection
 from spoolman.database import models, vendor
 from spoolman.database.extra_field_query import apply_extra_field_filters_and_sort
@@ -32,6 +33,7 @@ from spoolman.ws import websocket_manager
 async def create(
     *,
     db: AsyncSession,
+    scope: Scope,
     density: float,
     diameter: float,
     name: str | None = None,
@@ -59,12 +61,13 @@ async def create(
     """
     vendor_item: models.Vendor | None = None
     if vendor_id is not None:
-        vendor_item = await vendor.get_by_id(db, vendor_id)
+        vendor_item = await vendor.get_by_id(db, scope, vendor_id)
         # default spool weight from vendor
         if spool_weight is None and vendor_item.empty_spool_weight is not None:
             spool_weight = vendor_item.empty_spool_weight
 
     filament = models.Filament(
+        owner_id=scope.account_id,
         name=name,
         registered=datetime.utcnow().replace(microsecond=0),
         vendor=vendor_item,
@@ -97,13 +100,12 @@ async def create(
     return filament
 
 
-async def get_by_id(db: AsyncSession, filament_id: int) -> models.Filament:
+async def get_by_id(db: AsyncSession, scope: Scope, filament_id: int) -> models.Filament:
     """Get a filament object from the database by the unique ID."""
-    filament = await db.get(
-        models.Filament,
-        filament_id,
-        options=[joinedload("*")],  # Load all nested objects as well
-    )
+    stmt = owned(select(models.Filament).where(models.Filament.id == filament_id), models.Filament, scope)
+    filament = (
+        (await db.execute(stmt.options(joinedload("*")))).unique().scalar_one_or_none()
+    )  # Load nested objects too
     if filament is None:
         raise ItemNotFoundError(f"No filament with ID {filament_id} found.")
     return filament
@@ -112,6 +114,7 @@ async def get_by_id(db: AsyncSession, filament_id: int) -> models.Filament:
 async def find(
     *,
     db: AsyncSession,
+    scope: Scope,
     ids: list[int] | None = None,
     vendor_name: str | None = None,
     vendor_id: int | Sequence[int] | None = None,
@@ -132,10 +135,12 @@ async def find(
 
     Returns a tuple containing the list of items and the total count of matching items.
     """
-    stmt = (
+    stmt = owned(
         select(models.Filament)
         .options(contains_eager(models.Filament.vendor))
-        .join(models.Filament.vendor, isouter=True)
+        .join(models.Filament.vendor, isouter=True),
+        models.Filament,
+        scope,
     )
 
     stmt = add_where_clause_int_in(stmt, models.Filament.id, ids)
@@ -158,6 +163,7 @@ async def find(
 
     stmt = await apply_extra_field_filters_and_sort(
         db=db,
+        scope=scope,
         stmt=stmt,
         base_obj=models.Filament,
         entity_type=EntityType.filament,
@@ -193,17 +199,18 @@ async def find(
 async def update(
     *,
     db: AsyncSession,
+    scope: Scope,
     filament_id: int,
     data: dict,
 ) -> models.Filament:
     """Update the fields of a filament object."""
-    filament = await get_by_id(db, filament_id)
+    filament = await get_by_id(db, scope, filament_id)
     for k, v in data.items():
         if k == "vendor_id":
             if v is None:
                 filament.vendor = None
             else:
-                filament.vendor = await vendor.get_by_id(db, v)
+                filament.vendor = await vendor.get_by_id(db, scope, v)
         elif k == "extra":
             # Merged per key, the same as a spool's and a vendor's: only the keys present in
             # the patch are touched, and a null value means the filament has no value for
@@ -235,9 +242,9 @@ async def update(
     return filament
 
 
-async def delete(db: AsyncSession, filament_id: int) -> None:
+async def delete(db: AsyncSession, scope: Scope, filament_id: int) -> None:
     """Delete a filament object."""
-    filament = await get_by_id(db, filament_id)
+    filament = await get_by_id(db, scope, filament_id)
     await db.delete(filament)
     try:
         await db.commit()  # Flush immediately so any errors are propagated in this request.
@@ -247,10 +254,13 @@ async def delete(db: AsyncSession, filament_id: int) -> None:
         raise ItemDeleteError("Failed to delete filament.") from exc
 
 
-async def clear_extra_field(db: AsyncSession, key: str) -> None:
-    """Delete all extra fields with a specific key."""
+async def clear_extra_field(db: AsyncSession, scope: Scope, key: str) -> None:
+    """Delete the account's extra field values with a specific key."""
     await db.execute(
-        sqlalchemy.delete(models.FilamentField).where(models.FilamentField.key == key),
+        sqlalchemy.delete(models.FilamentField).where(
+            models.FilamentField.key == key,
+            models.FilamentField.filament_id.in_(owned(select(models.Filament.id), models.Filament, scope)),
+        ),
     )
     await db.commit()
 
@@ -261,9 +271,10 @@ logger = logging.getLogger(__name__)
 async def find_materials(
     *,
     db: AsyncSession,
+    scope: Scope,
 ) -> list[str]:
     """Find a list of filament materials by searching for distinct values in the filament table."""
-    stmt = select(models.Filament.material).distinct()
+    stmt = owned(select(models.Filament.material).distinct(), models.Filament, scope)
     rows = await db.execute(stmt)
     return [row[0] for row in rows.all() if row[0] is not None]
 
@@ -271,9 +282,10 @@ async def find_materials(
 async def find_article_numbers(
     *,
     db: AsyncSession,
+    scope: Scope,
 ) -> list[str]:
     """Find a list of filament article numbers by searching for distinct values in the filament table."""
-    stmt = select(models.Filament.article_number).distinct()
+    stmt = owned(select(models.Filament.article_number).distinct(), models.Filament, scope)
     rows = await db.execute(stmt)
     return [row[0] for row in rows.all() if row[0] is not None]
 
@@ -281,6 +293,7 @@ async def find_article_numbers(
 async def find_by_color(
     *,
     db: AsyncSession,
+    scope: Scope,
     color_query_hex: str,
     similarity_threshold: float = 25,
 ) -> list[int]:
@@ -295,10 +308,10 @@ async def find_by_color(
     """
     color_query_lab = rgb_to_lab(hex_to_rgb(color_query_hex))
 
-    stmt = select(
-        models.Filament.id,
-        models.Filament.color_hex,
-        models.Filament.multi_color_hexes,
+    stmt = owned(
+        select(models.Filament.id, models.Filament.color_hex, models.Filament.multi_color_hexes),
+        models.Filament,
+        scope,
     )
     rows = (await db.execute(stmt)).all()
 
@@ -331,6 +344,7 @@ async def filament_changed(filament: models.Filament, typ: EventType) -> None:
                 date=datetime.utcnow(),
                 payload=Filament.from_db(filament),
             ),
+            filament.owner_id,
         )
     except Exception:
         # Important to have a catch-all here since we don't want to stop the call if this fails.

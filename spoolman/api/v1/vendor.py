@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from spoolman.access.scope import Level, Scope, get_scope, require_level
 from spoolman.api.v1.models import Message, Vendor, VendorEvent, extra_fields_request_description
 from spoolman.database import vendor
 from spoolman.database.database import get_db_session
@@ -81,6 +82,7 @@ class VendorUpdateParameters(VendorParameters):
 async def find(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     name: Annotated[
         str | None,
         Query(
@@ -135,6 +137,7 @@ async def find(
     try:
         db_items, total_count = await vendor.find(
             db=db,
+            scope=scope,
             name=name,
             external_id=external_id,
             extra_field_filters=extra_field_filters if extra_field_filters else None,
@@ -161,9 +164,10 @@ async def find(
 )
 async def notify_any(
     websocket: WebSocket,
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
-    websocket_manager.connect(("vendor",), websocket)
+    websocket_manager.connect(("vendor",), websocket, scope)
     try:
         while True:
             await asyncio.sleep(0.5)
@@ -185,9 +189,10 @@ async def notify_any(
 )
 async def get(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     vendor_id: int,
 ) -> Vendor:
-    db_item = await vendor.get_by_id(db, vendor_id)
+    db_item = await vendor.get_by_id(db, scope, vendor_id)
     return Vendor.from_db(db_item)
 
 
@@ -197,10 +202,11 @@ async def get(
 )
 async def notify(
     websocket: WebSocket,
+    scope: Annotated[Scope, Depends(get_scope)],
     vendor_id: int,
 ) -> None:
     await websocket.accept()
-    websocket_manager.connect(("vendor", str(vendor_id)), websocket)
+    websocket_manager.connect(("vendor", str(vendor_id)), websocket, scope)
     try:
         while True:
             await asyncio.sleep(0.5)
@@ -220,10 +226,11 @@ async def notify(
 )
 async def create(  # noqa: ANN201
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     body: VendorParameters,
 ):
     if body.extra:
-        all_fields = await get_extra_fields(db, EntityType.vendor)
+        all_fields = await get_extra_fields(db, scope, EntityType.vendor)
         try:
             validate_extra_field_dict(all_fields, body.extra)
         except ValueError as e:
@@ -231,6 +238,7 @@ async def create(  # noqa: ANN201
 
     db_item = await vendor.create(
         db=db,
+        scope=scope,
         name=body.name,
         comment=body.comment,
         empty_spool_weight=body.empty_spool_weight,
@@ -257,13 +265,14 @@ async def create(  # noqa: ANN201
 )
 async def update(  # noqa: ANN201
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     vendor_id: int,
     body: VendorUpdateParameters,
 ):
     patch_data = body.model_dump(exclude_unset=True)
 
     if body.extra:
-        all_fields = await get_extra_fields(db, EntityType.vendor)
+        all_fields = await get_extra_fields(db, scope, EntityType.vendor)
         try:
             validate_extra_field_dict(all_fields, body.extra)
         except ValueError as e:
@@ -271,6 +280,7 @@ async def update(  # noqa: ANN201
 
     db_item = await vendor.update(
         db=db,
+        scope=scope,
         vendor_id=vendor_id,
         data=patch_data,
     )
@@ -288,7 +298,8 @@ async def update(  # noqa: ANN201
 )
 async def delete(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     vendor_id: int,
 ) -> Message:
-    await vendor.delete(db, vendor_id)
+    await vendor.delete(db, scope, vendor_id)
     return Message(message="Success!")

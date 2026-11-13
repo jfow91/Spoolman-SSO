@@ -28,7 +28,11 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' && !startsWith(github.ref, 'refs/tags/') }}
 
 env:
-  GHCR_IMAGE: donkie/spoolman
+  GHCR_IMAGE: jfow91/spoolman-sso
+  # Local names the compose files in tests_integration and tests_frontend_v2 refer to.
+  TEST_IMAGE: donkie/spoolman:test
+  TESTER_IMAGE: donkie/spoolman-tester:latest
+  FAKE_OIDC_IMAGE: donkie/spoolman-fake-oidc:test
 
 jobs:
   #
@@ -107,18 +111,7 @@ jobs:
         with:
           python-version-file: "pyproject.toml"
     
-      - name: Install client dependencies
-        run: |
-          cd client
-          npm ci
-
-      - name: Build
-        run: |
-          cd client
-          rm -f .env && echo "VITE_APIURL=/api/v1" > .env.production
-          npm run build
-
-      # Build the new Svelte client (client_v2), served by default at runtime.
+      # Build the Svelte client (client_v2), the only client this fork serves.
       # No VITE_APIURL is set: the client resolves the API relative to its base path.
       - name: Install client_v2 dependencies
         run: |
@@ -135,15 +128,11 @@ jobs:
           echo "GIT_COMMIT=$(git rev-parse --short HEAD)" > build.txt
           echo "BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> build.txt
 
-      # Remove client sources and keep only the built output for each client
+      # Remove client sources and keep only the built output
       - name: Clean
         run: |
-          mv client/dist dist
-          rm -rf client
-          mkdir client
-          mv dist client/dist
           mv client_v2/build build_v2
-          rm -rf client_v2
+          rm -rf client client_v2
           mkdir client_v2
           mv build_v2 client_v2/build
           rm -rf .git
@@ -152,12 +141,6 @@ jobs:
       - name: Fix permissions
         run: |
           chmod +x scripts/*.sh
-
-      - name: Upload client Spoolman artifact
-        uses: actions/upload-artifact@v4.4.0
-        with:
-          name: client
-          path: client/dist
 
       - name: Upload client_v2 Spoolman artifact
         uses: actions/upload-artifact@v4.4.0
@@ -183,12 +166,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download client
-        uses: actions/download-artifact@v4.1.7
-        with:
-          name: client
-          path: client/dist
-
       - name: Download client_v2
         uses: actions/download-artifact@v4.1.7
         with:
@@ -210,7 +187,7 @@ jobs:
         uses: docker/build-push-action@v6.7.0
         with:
           context: .
-          tags: ${{ env.GHCR_IMAGE }}:test
+          tags: ${{ env.TEST_IMAGE }}
           outputs: type=docker,dest=/tmp/spoolman.tar
           cache-from: type=registry,ref=ghcr.io/${{ env.GHCR_IMAGE }}:buildcache-amd64
           cache-to: type=registry,ref=ghcr.io/${{ env.GHCR_IMAGE }}:buildcache-amd64,mode=max
@@ -221,7 +198,7 @@ jobs:
         uses: docker/build-push-action@v6.7.0
         with:
           context: .
-          tags: ${{ env.GHCR_IMAGE }}:test
+          tags: ${{ env.TEST_IMAGE }}
           outputs: type=docker,dest=/tmp/spoolman.tar
           cache-from: type=registry,ref=ghcr.io/${{ env.GHCR_IMAGE }}:buildcache-amd64
 
@@ -261,7 +238,7 @@ jobs:
         uses: docker/build-push-action@v6.7.0
         with:
           context: ./tests_integration
-          tags: ${{ env.GHCR_IMAGE }}-tester:latest
+          tags: ${{ env.TESTER_IMAGE }}
           outputs: type=docker,dest=/tmp/spoolman-tester.tar
           cache-from: type=registry,ref=ghcr.io/${{ env.GHCR_IMAGE }}:buildcache-tester
           cache-to: type=registry,ref=ghcr.io/${{ env.GHCR_IMAGE }}:buildcache-tester,mode=max
@@ -272,7 +249,7 @@ jobs:
         uses: docker/build-push-action@v6.7.0
         with:
           context: ./tests_integration
-          tags: ${{ env.GHCR_IMAGE }}-tester:latest
+          tags: ${{ env.TESTER_IMAGE }}
           outputs: type=docker,dest=/tmp/spoolman-tester.tar
           cache-from: type=registry,ref=ghcr.io/${{ env.GHCR_IMAGE }}:buildcache-tester
 
@@ -281,6 +258,21 @@ jobs:
         with:
           name: spoolman-tester-image
           path: /tmp/spoolman-tester.tar
+
+      # Fake PocketID for the integration tests; built from the repo root because it copies tests/support.
+      - name: Build fake OIDC provider
+        uses: docker/build-push-action@v6.7.0
+        with:
+          context: .
+          file: tests_integration/fake_oidc/Dockerfile
+          tags: ${{ env.FAKE_OIDC_IMAGE }}
+          outputs: type=docker,dest=/tmp/spoolman-fake-oidc.tar
+
+      - name: Upload fake OIDC artifact
+        uses: actions/upload-artifact@v4.4.0
+        with:
+          name: spoolman-fake-oidc-image
+          path: /tmp/spoolman-fake-oidc.tar
   #
   # Perform integration tests
   #
@@ -304,6 +296,7 @@ jobs:
         run: |
           docker load --input /tmp/spoolman-image/spoolman.tar
           docker load --input /tmp/spoolman-tester-image/spoolman-tester.tar
+          docker load --input /tmp/spoolman-fake-oidc-image/spoolman-fake-oidc.tar
 
       - name: Perform integration tests
         uses: hoverkraft-tech/compose-action@v2.0.1
@@ -311,59 +304,6 @@ jobs:
           compose-file: "./tests_integration/docker-compose-${{ matrix.dbtype }}.yml"
           up-flags: "--abort-on-container-exit"
           down-flags: "--volumes"
-  #
-  # Perform frontend (browser) integration tests against the real image
-  #
-  test-frontend:
-    needs: [build-amd64]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Download built image
-        uses: actions/download-artifact@v4.1.7
-        with:
-          name: spoolman-image
-          path: /tmp/spoolman-image
-
-      - name: Load built image
-        run: docker load --input /tmp/spoolman-image/spoolman.tar
-
-      - name: Install node
-        uses: actions/setup-node@v4.0.3
-        with:
-          node-version: '24'
-
-      - name: Install Playwright
-        run: |
-          cd tests_frontend
-          npm ci
-          npx playwright install --with-deps chromium
-
-      - name: Start Spoolman
-        run: docker compose -f tests_frontend/docker-compose.yml up -d --wait
-
-      - name: Run frontend integration tests
-        run: |
-          cd tests_frontend
-          npx playwright test
-
-      - name: Dump Spoolman logs on failure
-        if: failure()
-        run: docker compose -f tests_frontend/docker-compose.yml logs spoolman
-
-      - name: Upload Playwright report
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4.4.0
-        with:
-          name: playwright-report
-          path: tests_frontend/playwright-report
-          retention-days: 7
-
-      - name: Stop Spoolman
-        if: always()
-        run: docker compose -f tests_frontend/docker-compose.yml down -v
   #
   # Perform frontend (browser) integration tests for client_v2 against the real image
   #
@@ -447,12 +387,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download client
-        uses: actions/download-artifact@v4.1.7
-        with:
-          name: client
-          path: client/dist
-
       - name: Download client_v2
         uses: actions/download-artifact@v4.1.7
         with:
@@ -513,12 +447,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Download client
-        uses: actions/download-artifact@v4.1.7
-        with:
-          name: client
-          path: client/dist
 
       - name: Download client_v2
         uses: actions/download-artifact@v4.1.7
@@ -593,7 +521,7 @@ jobs:
   # alembic migrations) is slow, hence the generous retry budget.
   #
   test-multiarch-smoke:
-    needs: [build-arm64, build-armv7]
+    needs: [build-arm64, build-armv7, build-tester]
     strategy:
       fail-fast: false
       matrix:
@@ -621,10 +549,29 @@ jobs:
       - name: Load built image
         run: docker load --input /tmp/spoolman-image/${{ matrix.tarball }}
 
+      # The app refuses to start without OIDC config, so give it the amd64 fake provider.
+      - name: Download fake OIDC image
+        uses: actions/download-artifact@v4.1.7
+        with:
+          name: spoolman-fake-oidc-image
+          path: /tmp/spoolman-fake-oidc-image
+
+      - name: Start fake OIDC provider
+        run: |
+          docker load --input /tmp/spoolman-fake-oidc-image/spoolman-fake-oidc.tar
+          docker network create smoke
+          docker run -d --name fake-oidc --network smoke ${{ env.FAKE_OIDC_IMAGE }}
+
       - name: Start Spoolman (${{ matrix.arch }}, emulated via QEMU)
         run: |
           docker run -d --name spoolman-smoke \
             --platform ${{ matrix.platform }} \
+            --network smoke \
+            -e SPOOLMAN_OIDC_ISSUER=http://fake-oidc:9000 \
+            -e SPOOLMAN_OIDC_CLIENT_ID=spoolman \
+            -e SPOOLMAN_OIDC_CLIENT_SECRET=test-secret \
+            -e SPOOLMAN_PUBLIC_URL=http://localhost:8000 \
+            -e SPOOLMAN_SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
             -p 8000:8000 \
             ${{ env.GHCR_IMAGE }}:test-${{ matrix.arch }}
 
@@ -647,9 +594,9 @@ jobs:
 
       - name: Stop Spoolman
         if: always()
-        run: docker rm -f spoolman-smoke
+        run: docker rm -f spoolman-smoke fake-oidc
   #
-  # Release images GHCR and Docker Hub if tests pass
+  # Release images to GHCR if tests pass
   # Don't run this for pull requests
   #
   publish-images:
@@ -657,7 +604,6 @@ jobs:
     needs:
       [
         test,
-        test-frontend,
         test-frontend-v2,
         test-multiarch-smoke,
         build-amd64,
@@ -674,12 +620,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Download client
-        uses: actions/download-artifact@v4.1.7
-        with:
-          name: client
-          path: client/dist
 
       - name: Download client_v2
         uses: actions/download-artifact@v4.1.7
@@ -700,10 +640,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The trailing type=ref,event=branch is what gives an unmerged branch a
-      # pullable image (ghcr.io/donkie/spoolman:my-branch) for a bug reporter to
-      # test. It is GHCR-only and skips master (already published as :edge), so
-      # Docker Hub keeps carrying nothing but :edge and tagged releases.
+      # :latest and :sha-<short> from master; version tags for releases. The trailing
+      # type=ref,event=branch gives an unmerged branch a pullable image for testing.
       - name: Extract metadata (tags, labels) for GHCR
         id: meta-ghcr
         uses: docker/metadata-action@v5.5.1
@@ -711,31 +649,13 @@ jobs:
           images: |
             ghcr.io/${{ env.GHCR_IMAGE }}
           tags: |
-            type=edge
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=ref,event=branch,enable=${{ github.ref_name != 'master' }}
 
-      - name: Extract metadata (tags, labels) for Docker Hub
-        id: meta-dh
-        uses: docker/metadata-action@v5.5.1
-        with:
-          images: |
-            ${{ vars.REMOTE_REGISTRY_URL }}/${{ vars.REMOTE_REGISTRY_NAMESPACE }}/${{ vars.REMOTE_REGISTRY_REPOSITORY }}
-          tags: |
-            type=edge
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-
-      - name: Log in to DockerHub
-        uses: docker/login-action@v3.3.0
-        with:
-          registry: ${{ vars.REMOTE_REGISTRY_URL }}
-          username: ${{ secrets.REMOTE_REGISTRY_USERNAME }}
-          password: ${{ secrets.REMOTE_REGISTRY_PASSWORD }}
-    
       - name: Store git commit and build date
         run: |
           echo "GIT_COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
@@ -755,9 +675,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
-          tags: |
-            ${{ steps.meta-ghcr.outputs.tags }}
-            ${{ steps.meta-dh.outputs.tags }}
+          tags: ${{ steps.meta-ghcr.outputs.tags }}
           labels: ${{ steps.meta-ghcr.outputs.labels }}
           build-args: |
             GIT_COMMIT
@@ -773,9 +691,7 @@ jobs:
       - name: Sign the published images
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-          TAGS: |
-            ${{ steps.meta-ghcr.outputs.tags }}
-            ${{ steps.meta-dh.outputs.tags }}
+          TAGS: ${{ steps.meta-ghcr.outputs.tags }}
         run: |
           echo "${TAGS}" | while read -r tag; do
             [ -n "${tag}" ] || continue
@@ -805,7 +721,7 @@ jobs:
           cd /tmp/spoolman
           echo '{
             "project_name": "Spoolman",
-            "project_owner": "Donkie",
+            "project_owner": "${{ github.repository_owner }}",
             "version": "${{ github.ref_name }}"
           }' > release_info.json
 

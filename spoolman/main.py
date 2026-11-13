@@ -2,9 +2,11 @@
 
 import logging
 import subprocess
+import sys
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
+import httpx
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +16,10 @@ from prometheus_client import generate_latest
 from scheduler.asyncio.scheduler import Scheduler
 
 from spoolman import env, externaldb, security, update_check
+from spoolman.access.principal import PrincipalMiddleware
 from spoolman.api.v1.router import app as v1_app
+from spoolman.auth import config as auth_config
+from spoolman.auth import routes as auth_routes
 from spoolman.client import SinglePageApplication, render_config_js
 from spoolman.database import database
 from spoolman.prometheus.metrics import registry
@@ -89,6 +94,10 @@ if base_path != "":
 def get_configjs() -> Response:
     """Return a dynamic js config file."""
     return Response(content=render_config_js(base_path), media_type="text/javascript")
+
+
+# Before the client mount below, which would otherwise swallow <base_path>/auth/*.
+app.include_router(auth_routes.router, prefix=base_path + "/auth")
 
 
 # Mount the client side app. The new Svelte client is served by default; set
@@ -181,10 +190,12 @@ def add_cors_middleware() -> None:
     )
 
 
-# Order matters: middleware added last is outermost. CORS wraps both guards, so that a legitimate
-# cross-origin client can read the 403 body instead of an opaque CORS error, and the host guard
+# Order matters: middleware added last is outermost. CORS wraps the guards, so that a legitimate
+# cross-origin client can read the 401/403 body instead of an opaque CORS error, and the host guard
 # wraps the origin guard, because a rebound host makes the origin check agree with the attacker.
+# The principal sits between them: the origin guard needs to know whether a key or a session called.
 add_trusted_origin_middleware()
+app.add_middleware(PrincipalMiddleware)
 add_trusted_host_middleware()
 add_cors_middleware()
 
@@ -222,6 +233,14 @@ async def startup() -> None:
     logger.info("Using data directory: %s", env.get_data_dir().resolve())
     logger.info("Using logs directory: %s", env.get_logs_dir().resolve())
     logger.info("Using backups directory: %s", env.get_backups_dir().resolve())
+
+    try:
+        oidc_cfg = auth_config.load_oidc_config()
+        async with httpx.AsyncClient(timeout=10) as http:
+            auth_config.set_auth(oidc_cfg, await auth_config.discover(oidc_cfg, http))
+    except auth_config.AuthConfigError as exc:
+        logger.error("%s", exc)  # noqa: TRY400
+        sys.exit(1)
 
     logger.info("Setting up database...")
     database.setup_db(database.get_connection_url())

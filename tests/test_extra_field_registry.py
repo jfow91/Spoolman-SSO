@@ -10,6 +10,7 @@ import json
 import pytest
 
 from spoolman import extra_field_registry as registry
+from spoolman.access.scope import scope_for_user
 from spoolman.extra_field_registry import EntityType, ExtraField
 
 
@@ -87,29 +88,31 @@ def test_the_offending_index_is_reported():
 
 def test_invalidate_drops_only_the_matching_entity(monkeypatch: pytest.MonkeyPatch):
     cache = {
-        EntityType.spool: [ExtraField.model_validate(field())],
-        EntityType.vendor: [],
+        (1, EntityType.spool): [ExtraField.model_validate(field())],
+        (1, EntityType.vendor): [],
+        (2, EntityType.spool): [],
     }
     monkeypatch.setattr(registry, "extra_field_cache", cache)
 
-    registry.invalidate_extra_field_cache("extra_fields_spool")
+    registry.invalidate_extra_field_cache(scope_for_user(1), "extra_fields_spool")
 
-    assert EntityType.spool not in cache
-    assert EntityType.vendor in cache
+    assert (1, EntityType.spool) not in cache
+    assert (1, EntityType.vendor) in cache
+    assert (2, EntityType.spool) in cache
 
 
 def test_invalidate_ignores_unrelated_settings(monkeypatch: pytest.MonkeyPatch):
-    cache = {EntityType.spool: []}
+    cache = {(1, EntityType.spool): []}
     monkeypatch.setattr(registry, "extra_field_cache", cache)
 
-    registry.invalidate_extra_field_cache("currency")
+    registry.invalidate_extra_field_cache(scope_for_user(1), "currency")
 
-    assert EntityType.spool in cache
+    assert (1, EntityType.spool) in cache
 
 
 def test_invalidate_is_safe_when_nothing_is_cached(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(registry, "extra_field_cache", {})
-    registry.invalidate_extra_field_cache("extra_fields_spool")
+    registry.invalidate_extra_field_cache(scope_for_user(1), "extra_fields_spool")
 
 
 def test_oversized_value_is_rejected():

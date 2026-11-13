@@ -8,12 +8,13 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, WebSocket,
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from spoolman.access.scope import Level, Scope, get_scope, require_level
 from spoolman.api.v1.models import Message, SettingEvent, SettingResponse
 from spoolman.database import setting
 from spoolman.database.database import get_db_session
-from spoolman.exceptions import ItemNotFoundError
+from spoolman.exceptions import AccessDeniedError
 from spoolman.extra_field_registry import invalidate_extra_field_cache, validate_extra_field_setting
-from spoolman.settings import SETTINGS, parse_setting
+from spoolman.settings import APP_WIDE_SETTINGS, SETTINGS, SettingDefinition, parse_setting
 from spoolman.ws import websocket_manager
 
 router = APIRouter(
@@ -56,15 +57,28 @@ async def require_json_content_type(request: Request) -> None:
         )
 
 
+async def _read(db: AsyncSession, scope: Scope, definition: SettingDefinition) -> SettingResponse:
+    """Read the account's value of a setting (the app-wide one for `base_url`), or its default."""
+    if definition.key in APP_WIDE_SETTINGS:
+        stored = await setting.get_app_setting(db, definition.key)
+        value, is_set = (definition.default, False) if stored is None else (stored, True)
+    else:
+        db_item = await setting.get(db, scope, definition)
+        # An unset setting comes back as an unsaved default row, which has never been written.
+        value, is_set = db_item.value, db_item.last_updated is not None
+    return SettingResponse(value=value, is_set=is_set, type=definition.type)
+
+
 @router.websocket(
     "",
     name="Listen to setting changes",
 )
 async def notify_any(
     websocket: WebSocket,
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> None:
     await websocket.accept()
-    websocket_manager.connect(("setting",), websocket)
+    websocket_manager.connect(("setting",), websocket, scope)
     try:
         while True:
             await asyncio.sleep(0.5)
@@ -88,6 +102,7 @@ async def notify_any(
 )
 async def get(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     key: str,
 ) -> SettingResponse | JSONResponse:
     try:
@@ -95,19 +110,7 @@ async def get(
     except ValueError as e:
         return JSONResponse(status_code=404, content=Message(message=str(e)).dict())
 
-    try:
-        db_item = await setting.get(db, definition)
-        value = db_item.value
-        is_set = True
-    except ItemNotFoundError:
-        value = definition.default
-        is_set = False
-
-    return SettingResponse(
-        value=value,
-        is_set=is_set,
-        type=definition.type,
-    )
+    return await _read(db, scope, definition)
 
 
 @router.get(
@@ -119,16 +122,19 @@ async def get(
 )
 async def find(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
 ) -> dict[str, SettingResponse] | JSONResponse:
-    settings: dict[str, SettingResponse] = {}
+    settings: dict[str, SettingResponse] = {key: await _read(db, scope, SETTINGS[key]) for key in APP_WIDE_SETTINGS}
 
     # First get all settings that have been set.
-    db_items = await setting.get_all(db)
+    db_items = await setting.get_all(db, scope)
     for db_item in db_items:
         try:
             definition = parse_setting(db_item.key)
         except ValueError:
             continue  # Ignore settings that have been removed.
+        if definition.key in APP_WIDE_SETTINGS:
+            continue
 
         settings[db_item.key] = SettingResponse(
             value=db_item.value,
@@ -154,6 +160,7 @@ async def find(
 )
 async def notify(
     websocket: WebSocket,
+    scope: Annotated[Scope, Depends(get_scope)],
     key: str,
 ) -> None:
     try:
@@ -163,7 +170,7 @@ async def notify(
         return
 
     await websocket.accept()
-    websocket_manager.connect(("setting", str(key)), websocket)
+    websocket_manager.connect(("setting", str(key)), websocket, scope)
     try:
         while True:
             await asyncio.sleep(0.5)
@@ -188,6 +195,7 @@ async def notify(
 )
 async def update(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     key: str,
     body: Annotated[str, Body(media_type="application/json")],
 ) -> SettingResponse | JSONResponse:
@@ -195,6 +203,10 @@ async def update(
         definition = parse_setting(key)
     except ValueError as e:
         return JSONResponse(status_code=404, content=Message(message=str(e)).dict())
+
+    app_wide = key in APP_WIDE_SETTINGS
+    if app_wide and not scope.principal.is_admin:
+        raise AccessDeniedError("Only an admin can change this setting")
 
     if body and body != "null":
         try:
@@ -208,31 +220,24 @@ async def update(
 
         try:
             # Raised when the value exceeds the column limit; a client error, not a server one.
-            await setting.update(db=db, definition=definition, value=body)
+            if app_wide:
+                await setting.set_app_setting(db, key, body)
+            else:
+                await setting.update(db=db, scope=scope, definition=definition, value=body)
         except ValueError as e:
             return JSONResponse(status_code=400, content=Message(message=str(e)).dict())
         logger.info('Setting "%s" has been set to "%s".', key, body)
     else:
-        await setting.delete(db=db, definition=definition)
+        if app_wide:
+            await setting.set_app_setting(db, key, None)
+        else:
+            await setting.delete(db=db, scope=scope, definition=definition)
         logger.info('Setting "%s" has been unset.', key)
 
     await db.commit()
 
     # The registry caches extra fields in memory and is otherwise only refreshed by the /field
     # endpoints, so without this the two paths disagree until the next restart.
-    invalidate_extra_field_cache(key)
+    invalidate_extra_field_cache(scope, key)
 
-    # Get the new value of the setting.
-    try:
-        db_item = await setting.get(db, definition)
-        value = db_item.value
-        is_set = True
-    except ItemNotFoundError:
-        value = definition.default
-        is_set = False
-
-    return SettingResponse(
-        value=value,
-        is_set=is_set,
-        type=definition.type,
-    )
+    return await _read(db, scope, definition)

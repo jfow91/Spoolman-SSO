@@ -12,6 +12,7 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.expression import FunctionElement
 
+from spoolman.access.scope import owned
 from spoolman.database import models
 from spoolman.database.utils import (
     LIKE_ESCAPE,
@@ -26,6 +27,8 @@ from spoolman.extra_field_registry import EntityType, ExtraField, ExtraFieldType
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.orm.attributes import InstrumentedAttribute
+
+    from spoolman.access.scope import Scope
 
 
 class _JsonArrayFirstElement(FunctionElement):
@@ -208,6 +211,7 @@ def _parse_boolean_filter(value: str) -> bool:
 async def apply_extra_field_filters_and_sort(
     *,
     db: AsyncSession,
+    scope: Scope,
     stmt: Select,
     base_obj: type[models.Base],
     entity_type: EntityType,
@@ -218,7 +222,7 @@ async def apply_extra_field_filters_and_sort(
     if not extra_field_filters and not (sort_by is not None and any(field.startswith("extra.") for field in sort_by)):
         return stmt
 
-    extra_fields = await get_extra_fields(db, entity_type)
+    extra_fields = await get_extra_fields(db, scope, entity_type)
     extra_fields_dict: dict[str, ExtraField] = {field.key: field for field in extra_fields}
 
     if extra_field_filters:
@@ -264,6 +268,7 @@ async def apply_extra_field_filters_and_sort(
 async def apply_spool_related_extra_filters(
     *,
     db: AsyncSession,
+    scope: Scope,
     stmt: Select,
     filament_filters: dict[str, str] | None,
     vendor_filters: dict[str, str] | None,
@@ -283,7 +288,7 @@ async def apply_spool_related_extra_filters(
     link = models.Spool.filament_id if link_column is None else link_column
 
     if filament_filters:
-        fields = {f.key: f for f in await get_extra_fields(db, EntityType.filament)}
+        fields = {f.key: f for f in await get_extra_fields(db, scope, EntityType.filament)}
         for field_key, value in filament_filters.items():
             field = fields.get(field_key)
             if field is None:
@@ -300,7 +305,7 @@ async def apply_spool_related_extra_filters(
             )
 
     if vendor_filters:
-        fields = {f.key: f for f in await get_extra_fields(db, EntityType.vendor)}
+        fields = {f.key: f for f in await get_extra_fields(db, scope, EntityType.vendor)}
         for field_key, value in vendor_filters.items():
             field = fields.get(field_key)
             if field is None:
@@ -498,6 +503,7 @@ def add_where_clause_extra_field(  # noqa: C901, PLR0912, PLR0915
 async def find_extra_field_values(
     *,
     db: AsyncSession,
+    scope: Scope,
     entity_type: EntityType,
     field_key: str,
 ) -> list[str]:
@@ -510,7 +516,15 @@ async def find_extra_field_values(
     """
     field_table = _get_field_table_for_entity(entity_type)
     decoded = _JsonScalarText(field_table.value)
-    stmt = sqlalchemy.select(decoded).where(field_table.key == field_key).distinct()
+    entity = {EntityType.spool: models.Spool, EntityType.filament: models.Filament, EntityType.vendor: models.Vendor}[
+        entity_type
+    ]
+    owned_ids = owned(sqlalchemy.select(entity.id), entity, scope)
+    stmt = (
+        sqlalchemy.select(decoded)
+        .where(field_table.key == field_key, _get_entity_id_column(field_table).in_(owned_ids))
+        .distinct()
+    )
     rows = await db.execute(stmt)
     values = {row[0] for row in rows.all() if row[0] is not None and row[0] != ""}
     return sorted(values)

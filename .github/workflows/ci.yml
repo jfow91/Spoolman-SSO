@@ -344,9 +344,10 @@ jobs:
       # Screenshots first: they seed a fixed dataset and need the database empty.
       # The Argos reporter uploads them and posts the visual diff on the PR. Not on
       # tags: Argos needs a branch, and master already uploaded the same commit.
+      # Upstream only: this fork has no Argos project, so the upload would fail the job.
       - name: Take client_v2 screenshots
         env:
-          ARGOS_UPLOAD: ${{ !startsWith(github.ref, 'refs/tags/') && '1' || '' }}
+          ARGOS_UPLOAD: ${{ github.repository == 'Donkie/Spoolman' && !startsWith(github.ref, 'refs/tags/') && '1' || '' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd tests_frontend_v2

@@ -67,7 +67,9 @@ async function ensureOk(res: Response, method: string, path: string): Promise<Re
 		} catch {
 			/* no body, or not JSON */
 		}
-		const detail = typeof body?.message === 'string' ? body.message : '';
+		// FastAPI's HTTPException sends `detail`; the app's own handlers send `message`.
+		const reason = body?.message ?? body?.detail;
+		const detail = typeof reason === 'string' ? reason : '';
 		throw new HttpError(`${method} ${path} → ${res.status}${detail ? `: ${detail}` : ''}`, res.status, body);
 	}
 	return res;
@@ -163,4 +165,9 @@ export async function deleteResource(path: string): Promise<void> {
 export async function deleteJson<T = unknown>(path: string): Promise<T> {
 	const res = await ensureOk(await fetch(API_BASE + path, { method: 'DELETE' }), 'DELETE', path);
 	return (await res.json()) as T;
+}
+
+/** POST with no body, for actions that answer 204. */
+export async function postEmpty(path: string): Promise<void> {
+	await ensureOk(await fetch(API_BASE + path, { method: 'POST' }), 'POST', path);
 }

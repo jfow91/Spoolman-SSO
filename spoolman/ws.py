@@ -5,6 +5,7 @@ import logging
 from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 
+from spoolman.access.scope import Scope
 from spoolman.api.v1.models import Event
 
 logger = logging.getLogger(__name__)
@@ -20,33 +21,40 @@ class SubscriptionTree:
     - ("vendor", "1") will subscribe to events for vendor 1
     - ("vendor") will subscribe to events for all vendors
     - () will subscribe to events for all vendors, filaments and spools
+
+    Every subscriber is held with the scope it connected under, and an event only reaches
+    subscribers whose account owns the record, at every level of the tree.
     """
 
     def __init__(self) -> None:
         """Initialize."""
         self.children: dict[str, SubscriptionTree] = {}
-        self.subscribers: set[WebSocket] = set()
+        self.subscribers: dict[WebSocket, Scope] = {}
 
-    def add(self, path: tuple[str, ...], websocket: WebSocket) -> None:
+    def add(self, path: tuple[str, ...], websocket: WebSocket, scope: Scope) -> None:
         """Add a websocket to the subscription tree."""
         if len(path) == 0:
-            self.subscribers.add(websocket)
+            self.subscribers[websocket] = scope
         else:
             if path[0] not in self.children:
                 self.children[path[0]] = SubscriptionTree()
-            self.children[path[0]].add(path[1:], websocket)
+            self.children[path[0]].add(path[1:], websocket, scope)
 
     def remove(self, path: tuple[str, ...], websocket: WebSocket) -> None:
         """Remove a websocket from the subscription tree."""
         if len(path) == 0:
             # A failed broadcast can already have dropped this socket before its
             # handler receives the disconnect event. Cleanup must be idempotent.
-            self.subscribers.discard(websocket)
+            self.subscribers.pop(websocket, None)
         elif path[0] in self.children:
             self.children[path[0]].remove(path[1:], websocket)
 
-    async def send(self, path: tuple[str, ...], evt: Event) -> None:
-        """Send a message to all websockets in this branch of the tree."""
+    async def send(self, path: tuple[str, ...], evt: Event, owner_id: int | None) -> None:
+        """Send a message to the owner's websockets in this branch of the tree.
+
+        `owner_id` is the account owning the record; None only for the app-wide `base_url` setting,
+        which every account sees.
+        """
         # Broadcast to all subscribers on this level.
         #
         # Every subscriber is isolated from every other one, which is load-bearing rather than
@@ -56,7 +64,9 @@ class SubscriptionTree:
         # other subscriber in the pool -- on the shared tree that means a browser tab being
         # closed could stop Moonraker hearing about a spool. Iterating a snapshot matters for
         # the same reason: dropping a dead subscriber mutates the set being walked.
-        for websocket in list(self.subscribers):
+        for websocket, scope in list(self.subscribers.items()):
+            if owner_id is not None and scope.account_id != owner_id:
+                continue
             if (
                 websocket.client_state == WebSocketState.DISCONNECTED  # noqa: PLR1714
                 or websocket.application_state == WebSocketState.DISCONNECTED
@@ -80,7 +90,7 @@ class SubscriptionTree:
 
         # Send the message further down the tree
         if len(path) > 0 and path[0] in self.children:
-            await self.children[path[0]].send(path[1:], evt)
+            await self.children[path[0]].send(path[1:], evt, owner_id)
 
     def _drop(self, websocket: WebSocket, path: tuple[str, ...]) -> None:
         """Drop a subscriber of THIS node that can no longer be written to.
@@ -89,9 +99,9 @@ class SubscriptionTree:
         `path` is the part of the route still to be traversed, not the pool the socket
         subscribed with, so `remove` would descend into a child and look in the wrong set --
         leaving the dead socket in place to fail again on the next event, and raising KeyError
-        of its own. `discard` also makes the drop idempotent.
+        of its own. `pop` with a default also makes the drop idempotent.
         """
-        self.subscribers.discard(websocket)
+        self.subscribers.pop(websocket, None)
         logger.info(
             "Forcing disconnection of client %s on pool %s",
             websocket.client.host if websocket.client else "?",
@@ -106,9 +116,9 @@ class WebsocketManager:
         """Initialize."""
         self.tree = SubscriptionTree()
 
-    def connect(self, pool: tuple[str, ...], websocket: WebSocket) -> None:
+    def connect(self, pool: tuple[str, ...], websocket: WebSocket, scope: Scope) -> None:
         """Connect a websocket."""
-        self.tree.add(pool, websocket)
+        self.tree.add(pool, websocket, scope)
         logger.info(
             "Client %s is now listening on pool %s",
             websocket.client.host if websocket.client else "?",
@@ -124,9 +134,9 @@ class WebsocketManager:
             ",".join(pool),
         )
 
-    async def send(self, pool: tuple[str, ...], evt: Event) -> None:
-        """Send a message to all websockets in a pool."""
-        await self.tree.send(pool, evt)
+    async def send(self, pool: tuple[str, ...], evt: Event, owner_id: int | None) -> None:
+        """Send a message to the owner's websockets in a pool (everyone's when owner_id is None)."""
+        await self.tree.send(pool, evt, owner_id)
 
 
 websocket_manager = WebsocketManager()
@@ -140,6 +150,7 @@ websocket_manager = WebsocketManager()
 # an API v1 compatibility problem for no benefit: a scan is not a change to any data, and the
 # clients that want scans want to filter them by reader rather than by entity.
 #
-# Pools here are (reader_id,) with () meaning "every reader", so the tree's propagate-along-the-
-# path behaviour gives "follow all readers" for free.
+# Pools here are (account_id, reader_id) with (account_id,) meaning "every reader", so the tree's
+# propagate-along-the-path behaviour gives "follow all readers" for free. Sends also pass the
+# scanner's account as owner, so the owner filter applies here too, on top of the account path.
 scan_websocket_manager = WebsocketManager()

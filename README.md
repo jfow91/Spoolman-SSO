@@ -1,3 +1,17 @@
+## Spoolman-SSO: what this fork adds
+
+This is a fork of [Donkie/Spoolman](https://github.com/Donkie/Spoolman) for households and makerspaces that share one server. It adds:
+
+* **PocketID (OIDC) sign-in** instead of open access.
+* **A separate account per person**, with admins who manage users but cannot see other people's data.
+* **Personal printer keys** (Edit or View) so Moonraker, OctoPrint and other bridges can reach your data without a login.
+
+Setup: [docs/multiuser/pocketid-setup.md](docs/multiuser/pocketid-setup.md) and [docker-compose.example.yml](docs/multiuser/docker-compose.example.yml). Image: `ghcr.io/jfow91/spoolman-sso:latest`.
+
+All credit for Spoolman itself goes to [Donkie](https://github.com/Donkie) and the upstream contributors. The rest of this README is upstream's.
+
+---
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://github.com/Donkie/Spoolman/assets/2332094/4e6e80ac-c7be-4ad2-9a33-dedc1b5ba30e">
   <source media="(prefers-color-scheme: light)" srcset="https://github.com/Donkie/Spoolman/assets/2332094/3c120b3a-1422-42f6-a16b-8d5a07c33000">

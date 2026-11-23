@@ -4,6 +4,9 @@
 	import SettingRow from '$components/settings/SettingRow.svelte';
 	import ExtraFieldsManager from '$components/settings/ExtraFieldsManager.svelte';
 	import ScannerSettings from '$components/settings/ScannerSettings.svelte';
+	import Button from '$components/Button.svelte';
+	import { resolve } from '$app/paths';
+	import { getMe } from '$lib/api/account';
 	import ArrowRight from '@lucide/svelte/icons/arrow-right';
 	import { settings } from '$lib/stores/settings.svelte';
 	import { theme, type ThemePref } from '$lib/stores/theme.svelte';
@@ -14,6 +17,14 @@
 	import { numericInput, parseDecimal } from '$lib/utils/numeric';
 	import { page } from '$app/state';
 	import { entityFromUrl, gotoEntity, EXTRA_FIELDS_ANCHOR } from '$lib/settings/params';
+
+	let isAdmin = $state(false);
+	$effect(() => {
+		getMe().then(
+			(me) => (isAdmin = me.isAdmin),
+			() => {}
+		);
+	});
 
 	// Which entity's extra fields to show comes from the URL (`?fields=…`), so the
 	// inspectors can link straight at the tab they're about; a URL that says nothing
@@ -72,6 +83,13 @@
 <div class="page scroll-y">
 	<div class="wrap">
 		<div class="title">{m['settings.header']()}</div>
+
+		<div class="account-links">
+			<Button variant="outline" href={resolve('/settings/keys')}>{m['account.keys']()}</Button>
+			{#if isAdmin}
+				<Button variant="outline" href={resolve('/settings/users')}>{m['account.users']()}</Button>
+			{/if}
+		</div>
 
 		<div class="sec-label">{m['settings.appearance.tab']()}</div>
 		<Card divided>
@@ -196,6 +214,11 @@
 	.title {
 		font-weight: 700;
 		font-size: 16px;
+	}
+	.account-links {
+		display: flex;
+		gap: 8px;
+		margin-top: 12px;
 	}
 	.subtitle {
 		font-size: 12px;

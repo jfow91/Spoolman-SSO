@@ -5,6 +5,10 @@ class ItemNotFoundError(Exception):
     pass
 
 
+class AccessDeniedError(Exception):
+    pass
+
+
 class ItemDeleteError(Exception):
     pass
 

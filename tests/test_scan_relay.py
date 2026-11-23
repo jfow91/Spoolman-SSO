@@ -15,6 +15,7 @@ from spoolman.scanrelay import MAX_READERS, READER_ID_PATTERN, ScanRelay, derive
 # Aware, matching the relay's own clock. Injected time and the relay's default must agree:
 # register() writes last_seen and readers() prunes against it, so a naive value here would
 # only pass because these tests inject every clock -- see the internal-consistency test below.
+A = 1
 T0 = datetime(2026, 8, 13, 12, 0, 0, tzinfo=timezone.utc)
 
 
@@ -24,27 +25,27 @@ def relay() -> ScanRelay:
 
 
 def test_first_scan_broadcasts(relay: ScanRelay):
-    assert relay.should_broadcast("04A2", "desk", None, now=T0) is True
+    assert relay.should_broadcast(A, "04A2", "desk", None, now=T0) is True
 
 
 def test_repeat_within_the_window_is_suppressed(relay: ScanRelay):
     """A reader re-reads a tag that is sitting still; subscribers should see one event."""
-    relay.should_broadcast("04A2", "desk", ("spool", 7), now=T0)
-    assert relay.should_broadcast("04A2", "desk", ("spool", 7), now=T0 + timedelta(seconds=1)) is False
-    assert relay.should_broadcast("04A2", "desk", ("spool", 7), now=T0 + timedelta(seconds=2.9)) is False
+    relay.should_broadcast(A, "04A2", "desk", ("spool", 7), now=T0)
+    assert relay.should_broadcast(A, "04A2", "desk", ("spool", 7), now=T0 + timedelta(seconds=1)) is False
+    assert relay.should_broadcast(A, "04A2", "desk", ("spool", 7), now=T0 + timedelta(seconds=2.9)) is False
 
 
 def test_repeat_after_the_window_broadcasts_again(relay: ScanRelay):
     """Tapping the same tag again later is a new scan, not a duplicate."""
-    relay.should_broadcast("04A2", "desk", ("spool", 7), now=T0)
-    assert relay.should_broadcast("04A2", "desk", ("spool", 7), now=T0 + timedelta(seconds=4)) is True
+    relay.should_broadcast(A, "04A2", "desk", ("spool", 7), now=T0)
+    assert relay.should_broadcast(A, "04A2", "desk", ("spool", 7), now=T0 + timedelta(seconds=4)) is True
 
 
 def test_debounce_is_per_uid_and_per_reader(relay: ScanRelay):
     """Two readers tapping at once, or one reader seeing two tags, are distinct scans."""
-    relay.should_broadcast("04A2", "desk", None, now=T0)
-    assert relay.should_broadcast("04A2", "printer", None, now=T0) is True
-    assert relay.should_broadcast("B1C2", "desk", None, now=T0) is True
+    relay.should_broadcast(A, "04A2", "desk", None, now=T0)
+    assert relay.should_broadcast(A, "04A2", "printer", None, now=T0) is True
+    assert relay.should_broadcast(A, "B1C2", "desk", None, now=T0) is True
 
 
 def test_a_changed_match_is_not_a_repeat(relay: ScanRelay):
@@ -54,54 +55,54 @@ def test_a_changed_match_is_not_a_repeat(relay: ScanRelay):
     paired browser learns the tag is known. Keyed on `(uid, reader)` alone, that second scan
     looked like a duplicate of the first and the browser kept showing "unknown tag".
     """
-    assert relay.should_broadcast("04A2", "desk", None, now=T0) is True
-    assert relay.should_broadcast("04A2", "desk", ("spool", 7), now=T0 + timedelta(seconds=1)) is True
+    assert relay.should_broadcast(A, "04A2", "desk", None, now=T0) is True
+    assert relay.should_broadcast(A, "04A2", "desk", ("spool", 7), now=T0 + timedelta(seconds=1)) is True
 
 
 def test_a_repeat_of_an_unlinked_tag_is_still_suppressed(relay: ScanRelay):
     """The reason the debounce exists survives the fix: the key stays `(uid, reader, None)`."""
-    relay.should_broadcast("04A2", "desk", None, now=T0)
-    assert relay.should_broadcast("04A2", "desk", None, now=T0 + timedelta(seconds=1)) is False
+    relay.should_broadcast(A, "04A2", "desk", None, now=T0)
+    assert relay.should_broadcast(A, "04A2", "desk", None, now=T0 + timedelta(seconds=1)) is False
 
 
 def test_repeats_of_the_corrected_match_are_suppressed(relay: ScanRelay):
     """A tag left sitting on the reader after being linked is still one event, not a stream."""
-    relay.should_broadcast("04A2", "desk", None, now=T0)
-    relay.should_broadcast("04A2", "desk", ("spool", 7), now=T0 + timedelta(seconds=1))
-    assert relay.should_broadcast("04A2", "desk", ("spool", 7), now=T0 + timedelta(seconds=1.5)) is False
+    relay.should_broadcast(A, "04A2", "desk", None, now=T0)
+    relay.should_broadcast(A, "04A2", "desk", ("spool", 7), now=T0 + timedelta(seconds=1))
+    assert relay.should_broadcast(A, "04A2", "desk", ("spool", 7), now=T0 + timedelta(seconds=1.5)) is False
 
 
 def test_losing_a_match_is_also_a_change(relay: ScanRelay):
     """Unlinking is the same event in reverse: the browser has to hear it lost its spool."""
-    relay.should_broadcast("04A2", "desk", ("spool", 7), now=T0)
-    assert relay.should_broadcast("04A2", "desk", None, now=T0 + timedelta(seconds=1)) is True
+    relay.should_broadcast(A, "04A2", "desk", ("spool", 7), now=T0)
+    assert relay.should_broadcast(A, "04A2", "desk", None, now=T0 + timedelta(seconds=1)) is True
 
 
 def test_a_tag_moved_to_another_spool_is_a_change(relay: ScanRelay):
-    relay.should_broadcast("04A2", "desk", ("spool", 7), now=T0)
-    assert relay.should_broadcast("04A2", "desk", ("spool", 8), now=T0 + timedelta(seconds=1)) is True
+    relay.should_broadcast(A, "04A2", "desk", ("spool", 7), now=T0)
+    assert relay.should_broadcast(A, "04A2", "desk", ("spool", 8), now=T0 + timedelta(seconds=1)) is True
 
 
 def test_a_spool_and_a_filament_with_the_same_id_are_different_matches(relay: ScanRelay):
     """Spool 7 and filament 7 are different answers, so a tag moving between them is a change."""
-    relay.should_broadcast("04A2", "desk", ("spool", 7), now=T0)
-    assert relay.should_broadcast("04A2", "desk", ("filament", 7), now=T0 + timedelta(seconds=1)) is True
+    relay.should_broadcast(A, "04A2", "desk", ("spool", 7), now=T0)
+    assert relay.should_broadcast(A, "04A2", "desk", ("filament", 7), now=T0 + timedelta(seconds=1)) is True
 
 
 def test_debounce_entries_are_pruned(relay: ScanRelay):
     """The cache does not grow without bound as tags come and go."""
     for i in range(50):
-        relay.should_broadcast(f"UID{i:04X}", "desk", None, now=T0)
+        relay.should_broadcast(A, f"UID{i:04X}", "desk", None, now=T0)
     assert len(relay._last_broadcast) == 50  # noqa: SLF001
-    relay.should_broadcast("LATER", "desk", None, now=T0 + timedelta(seconds=30))
+    relay.should_broadcast(A, "LATER", "desk", None, now=T0 + timedelta(seconds=30))
     assert len(relay._last_broadcast) == 1  # noqa: SLF001
 
 
 def test_readers_are_listed_most_recently_seen_first(relay: ScanRelay):
-    relay.register("desk", "Desk reader", now=T0)
-    relay.register("printer", "Voron spool holder", now=T0 + timedelta(minutes=1))
+    relay.register(A, "desk", "Desk reader", now=T0)
+    relay.register(A, "printer", "Voron spool holder", now=T0 + timedelta(minutes=1))
 
-    readers = relay.readers(now=T0 + timedelta(minutes=2))
+    readers = relay.readers(A, now=T0 + timedelta(minutes=2))
     assert [r.reader_id for r in readers] == ["printer", "desk"]
     assert readers[0].name == "Voron spool holder"
     assert readers[1].last_seen == T0
@@ -109,64 +110,64 @@ def test_readers_are_listed_most_recently_seen_first(relay: ScanRelay):
 
 def test_registry_is_empty_before_anything_scans(relay: ScanRelay):
     """The registry is not persisted, so this is also the state after a restart."""
-    assert relay.readers(now=T0) == []
+    assert relay.readers(A, now=T0) == []
 
 
 def test_reader_keeps_its_name_when_a_later_scan_omits_one(relay: ScanRelay):
     """A trimmed-down agent must not blank the label in someone's picker."""
-    relay.register("desk", "Desk reader", now=T0)
-    relay.register("desk", None, now=T0 + timedelta(minutes=1))
+    relay.register(A, "desk", "Desk reader", now=T0)
+    relay.register(A, "desk", None, now=T0 + timedelta(minutes=1))
 
-    readers = relay.readers(now=T0 + timedelta(minutes=2))
+    readers = relay.readers(A, now=T0 + timedelta(minutes=2))
     assert readers[0].name == "Desk reader"
     assert readers[0].last_seen == T0 + timedelta(minutes=1)
 
 
 def test_a_new_name_replaces_the_old_one(relay: ScanRelay):
-    relay.register("desk", "Desk reader", now=T0)
-    relay.register("desk", "Bench reader", now=T0 + timedelta(minutes=1))
-    assert relay.readers(now=T0 + timedelta(minutes=2))[0].name == "Bench reader"
+    relay.register(A, "desk", "Desk reader", now=T0)
+    relay.register(A, "desk", "Bench reader", now=T0 + timedelta(minutes=1))
+    assert relay.readers(A, now=T0 + timedelta(minutes=2))[0].name == "Bench reader"
 
 
 def test_reader_remembers_the_last_uid_it_reported(relay: ScanRelay):
     """What is on the reader right now, so a client can offer it instead of asking for a tap."""
-    relay.register("desk", "Desk reader", "04A2B3C4", now=T0)
-    assert relay.readers(now=T0)[0].last_uid == "04A2B3C4"
+    relay.register(A, "desk", "Desk reader", "04A2B3C4", now=T0)
+    assert relay.readers(A, now=T0)[0].last_uid == "04A2B3C4"
 
 
 def test_a_new_scan_replaces_the_remembered_uid(relay: ScanRelay):
     """One UID, not a history: this answers "what is on the reader", not "what has been"."""
-    relay.register("desk", None, "04A2B3C4", now=T0)
-    relay.register("desk", None, "0455667788", now=T0 + timedelta(minutes=1))
-    assert relay.readers(now=T0 + timedelta(minutes=2))[0].last_uid == "0455667788"
+    relay.register(A, "desk", None, "04A2B3C4", now=T0)
+    relay.register(A, "desk", None, "0455667788", now=T0 + timedelta(minutes=1))
+    assert relay.readers(A, now=T0 + timedelta(minutes=2))[0].last_uid == "0455667788"
 
 
 def test_reader_keeps_its_uid_when_a_later_register_omits_one(relay: ScanRelay):
     """Same rule as the name, so registering for another reason cannot blank it."""
-    relay.register("desk", None, "04A2B3C4", now=T0)
-    relay.register("desk", "Desk reader", now=T0 + timedelta(minutes=1))
-    assert relay.readers(now=T0 + timedelta(minutes=2))[0].last_uid == "04A2B3C4"
+    relay.register(A, "desk", None, "04A2B3C4", now=T0)
+    relay.register(A, "desk", "Desk reader", now=T0 + timedelta(minutes=1))
+    assert relay.readers(A, now=T0 + timedelta(minutes=2))[0].last_uid == "04A2B3C4"
 
 
 def test_reader_that_has_not_scanned_has_no_uid(relay: ScanRelay):
     """Null rather than an empty string: "nothing seen yet" is not "seen nothing"."""
-    relay.register("desk", "Desk reader", now=T0)
-    assert relay.readers(now=T0)[0].last_uid is None
+    relay.register(A, "desk", "Desk reader", now=T0)
+    assert relay.readers(A, now=T0)[0].last_uid is None
 
 
 def test_readers_past_their_ttl_are_evicted_on_read(relay: ScanRelay):
     """Eviction happens as the response is built: no background task, nothing to shut down."""
-    relay.register("desk", None, now=T0)
-    assert len(relay.readers(now=T0 + timedelta(minutes=59))) == 1
-    assert relay.readers(now=T0 + timedelta(hours=2)) == []
+    relay.register(A, "desk", None, now=T0)
+    assert len(relay.readers(A, now=T0 + timedelta(minutes=59))) == 1
+    assert relay.readers(A, now=T0 + timedelta(hours=2)) == []
 
 
 def test_registry_is_capped(relay: ScanRelay):
     """An unauthenticated endpoint cannot be used to grow the registry without bound."""
     for i in range(MAX_READERS + 20):
-        relay.register(f"reader-{i}", None, now=T0 + timedelta(seconds=i))
+        relay.register(A, f"reader-{i}", None, now=T0 + timedelta(seconds=i))
 
-    readers = relay.readers(now=T0 + timedelta(minutes=30))
+    readers = relay.readers(A, now=T0 + timedelta(minutes=30))
     assert len(readers) == MAX_READERS
     # The least recently seen are the ones dropped.
     assert readers[0].reader_id == f"reader-{MAX_READERS + 19}"
@@ -181,11 +182,11 @@ def test_the_relays_own_clock_is_internally_consistent():
     others makes GET /tag/reader raise rather than return.
     """
     relay = ScanRelay()
-    relay.register("desk", "Desk reader")
-    assert relay.should_broadcast("04A2", "desk", None) is True
-    assert relay.should_broadcast("04A2", "desk", None) is False
+    relay.register(A, "desk", "Desk reader")
+    assert relay.should_broadcast(A, "04A2", "desk", None) is True
+    assert relay.should_broadcast(A, "04A2", "desk", None) is False
 
-    listed = relay.readers()
+    listed = relay.readers(A)
     assert [r.reader_id for r in listed] == ["desk"]
 
 

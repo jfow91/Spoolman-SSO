@@ -3,6 +3,8 @@
 	import NavTabs from './NavTabs.svelte';
 	import SearchBox from './library/SearchBox.svelte';
 	import Button from './Button.svelte';
+	import UserMenu from './UserMenu.svelte';
+	import type { Me } from '$lib/api/account';
 	import * as m from '$lib/paraglide/messages';
 	import Plus from '@lucide/svelte/icons/plus';
 	import ScanLine from '@lucide/svelte/icons/scan-line';
@@ -13,9 +15,10 @@
 	interface Props {
 		onadd?: () => void;
 		onscan?: () => void;
+		me?: Me;
 	}
 
-	let { onadd, onscan }: Props = $props();
+	let { onadd, onscan, me }: Props = $props();
 
 	// On mobile the search field would otherwise need its own row. Instead it
 	// collapses to a single icon in the top row and, when tapped, expands into a
@@ -66,6 +69,7 @@
 		<div class="add-desktop">
 			<Button onclick={onadd}><Plus size={15} /> {m['topbar.addSpools']()}</Button>
 		</div>
+		{#if me}<UserMenu {me} />{/if}
 
 		<!-- Mobile: the expanded search overlays the row so the typed query is visible. -->
 		<div class="search-overlay" bind:this={overlayEl}>

@@ -7,6 +7,7 @@ import sqlalchemy
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from spoolman.access.scope import Scope, owned
 from spoolman.api.v1.models import EventType, Vendor, VendorEvent
 from spoolman.database import models
 from spoolman.database.extra_field_query import apply_extra_field_filters_and_sort
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 async def create(
     *,
     db: AsyncSession,
+    scope: Scope,
     name: str | None = None,
     comment: str | None = None,
     empty_spool_weight: float | None = None,
@@ -41,6 +43,7 @@ async def create(
     commit and notify once, itself, when everything has succeeded.
     """
     vendor = models.Vendor(
+        owner_id=scope.account_id,
         name=name,
         registered=datetime.utcnow().replace(microsecond=0),
         comment=comment,
@@ -57,9 +60,11 @@ async def create(
     return vendor
 
 
-async def get_by_id(db: AsyncSession, vendor_id: int) -> models.Vendor:
+async def get_by_id(db: AsyncSession, scope: Scope, vendor_id: int) -> models.Vendor:
     """Get a vendor object from the database by the unique ID."""
-    vendor = await db.get(models.Vendor, vendor_id)
+    vendor = (
+        await db.execute(owned(select(models.Vendor).where(models.Vendor.id == vendor_id), models.Vendor, scope))
+    ).scalar_one_or_none()
     if vendor is None:
         raise ItemNotFoundError(f"No vendor with ID {vendor_id} found.")
     return vendor
@@ -68,6 +73,7 @@ async def get_by_id(db: AsyncSession, vendor_id: int) -> models.Vendor:
 async def find(
     *,
     db: AsyncSession,
+    scope: Scope,
     name: str | None = None,
     external_id: str | None = None,
     extra_field_filters: dict[str, str] | None = None,
@@ -79,7 +85,7 @@ async def find(
 
     Returns a tuple containing the list of items and the total count of matching items.
     """
-    stmt = select(models.Vendor)
+    stmt = owned(select(models.Vendor), models.Vendor, scope)
 
     stmt = add_where_clause_str(stmt, models.Vendor.name, name)
     stmt = add_where_clause_str_opt(stmt, models.Vendor.external_id, external_id)
@@ -88,6 +94,7 @@ async def find(
 
     stmt = await apply_extra_field_filters_and_sort(
         db=db,
+        scope=scope,
         stmt=stmt,
         base_obj=models.Vendor,
         entity_type=EntityType.vendor,
@@ -123,11 +130,12 @@ async def find(
 async def update(
     *,
     db: AsyncSession,
+    scope: Scope,
     vendor_id: int,
     data: dict,
 ) -> models.Vendor:
     """Update the fields of a vendor object."""
-    vendor = await get_by_id(db, vendor_id)
+    vendor = await get_by_id(db, scope, vendor_id)
     for k, v in data.items():
         if k == "extra":
             # Merged per key, the same as a spool's and a filament's: only the keys present
@@ -143,9 +151,9 @@ async def update(
     return vendor
 
 
-async def delete(db: AsyncSession, vendor_id: int) -> None:
+async def delete(db: AsyncSession, scope: Scope, vendor_id: int) -> None:
     """Delete a vendor object."""
-    vendor = await get_by_id(db, vendor_id)
+    vendor = await get_by_id(db, scope, vendor_id)
     await db.delete(vendor)
     # Commit before notifying so the deletion is durable and visible to subsequent
     # requests; post-commit notification must be the last, infallible step.
@@ -153,10 +161,13 @@ async def delete(db: AsyncSession, vendor_id: int) -> None:
     await vendor_changed(vendor, EventType.DELETED)
 
 
-async def clear_extra_field(db: AsyncSession, key: str) -> None:
-    """Delete all extra fields with a specific key."""
+async def clear_extra_field(db: AsyncSession, scope: Scope, key: str) -> None:
+    """Delete the account's extra field values with a specific key."""
     await db.execute(
-        sqlalchemy.delete(models.VendorField).where(models.VendorField.key == key),
+        sqlalchemy.delete(models.VendorField).where(
+            models.VendorField.key == key,
+            models.VendorField.vendor_id.in_(owned(select(models.Vendor.id), models.Vendor, scope)),
+        ),
     )
     await db.commit()
 
@@ -172,6 +183,7 @@ async def vendor_changed(vendor: models.Vendor, typ: EventType) -> None:
                 date=datetime.utcnow(),
                 payload=Vendor.from_db(vendor),
             ),
+            vendor.owner_id,
         )
     except Exception:
         # Important to have a catch-all here since we don't want to stop the call if this fails.

@@ -16,6 +16,10 @@ if __name__ == "__main__":
     if os.system(f"{ENGINE} build -t donkie/spoolman:test .") > 0:
         print("Failed to build Spoolman!")
         sys.exit(1)
+    print("Building fake PocketID...")
+    if os.system(f"{ENGINE} build -t donkie/spoolman-fake-oidc:test -f tests_integration/fake_oidc/Dockerfile .") > 0:
+        print("Failed to build fake PocketID!")
+        sys.exit(1)
     print("Building Spoolman tester...")
     if os.system(f"{ENGINE} build -t donkie/spoolman-tester:latest tests_integration") > 0:
         print("Failed to build Spoolman tester!")

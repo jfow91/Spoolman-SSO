@@ -478,7 +478,9 @@ class TrustedOriginMiddleware:
         # Every websocket handshake is guarded, since websockets are exempt from CORS and are
         # readable by the page that opens them. Of plain HTTP only the state-changing methods are.
         guarded = scope["type"] == "websocket" or (scope["type"] == "http" and scope["method"] in UNSAFE_METHODS)
-        if guarded:
+        # A personal key is not ambient browser authority, so cross-site forgery cannot use it.
+        principal = scope.get("state", {}).get("principal")
+        if guarded and getattr(principal, "via", None) != "key":
             connection = HTTPConnection(scope)
             if not is_trusted_request(connection):
                 await self._refuse(scope, receive, send, connection)

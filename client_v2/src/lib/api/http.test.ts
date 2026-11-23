@@ -63,3 +63,13 @@ describe('401 handling', () => {
 		expect(recover).not.toHaveBeenCalled();
 	});
 });
+
+describe('error reasons', () => {
+	it('shows the FastAPI detail when there is no message', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => new Response(JSON.stringify({ detail: 'Nothing to claim' }), { status: 409 }))
+		);
+		await expect(postJson('/me/claim', {})).rejects.toThrow('Nothing to claim');
+	});
+});

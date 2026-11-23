@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Path
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from spoolman.access.scope import Level, Scope, get_scope, require_level
 from spoolman.api.v1.models import Message
 from spoolman.database.database import get_db_session
 from spoolman.database.extra_field_query import find_extra_field_values
@@ -38,9 +39,10 @@ logger = logging.getLogger(__name__)
 )
 async def get(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     entity_type: Annotated[EntityType, Path(description="Entity type this field is for")],
 ) -> list[ExtraField]:
-    return await get_extra_fields(db, entity_type)
+    return await get_extra_fields(db, scope, entity_type)
 
 
 @router.get(
@@ -57,13 +59,14 @@ async def get(
 )
 async def get_values(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(get_scope)],
     entity_type: Annotated[EntityType, Path(description="Entity type this field is for")],
     key: Annotated[str, Path(min_length=1, max_length=64, pattern="^[a-z0-9_]+$")],
 ) -> list[str] | JSONResponse:
-    fields = await get_extra_fields(db, entity_type)
+    fields = await get_extra_fields(db, scope, entity_type)
     if not any(field.key == key for field in fields):
         return JSONResponse(status_code=404, content=Message(message=f"No extra field with key '{key}'.").dict())
-    return await find_extra_field_values(db=db, entity_type=entity_type, field_key=key)
+    return await find_extra_field_values(db=db, scope=scope, entity_type=entity_type, field_key=key)
 
 
 @router.post(
@@ -79,6 +82,7 @@ async def get_values(
 )
 async def update(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     entity_type: Annotated[EntityType, Path(description="Entity type this field is for")],
     key: Annotated[str, Path(min_length=1, max_length=64, pattern="^[a-z0-9_]+$")],
     body: ExtraFieldParameters,
@@ -89,11 +93,11 @@ async def update(
     body_with_key = ExtraField.model_validate(dict_body)
 
     try:
-        await add_or_update_extra_field(db, entity_type, body_with_key)
+        await add_or_update_extra_field(db, scope, entity_type, body_with_key)
     except ValueError as e:
         return JSONResponse(status_code=400, content=Message(message=str(e)).dict())
 
-    return await get_extra_fields(db, entity_type)
+    return await get_extra_fields(db, scope, entity_type)
 
 
 @router.delete(
@@ -108,11 +112,12 @@ async def update(
 )
 async def delete(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    scope: Annotated[Scope, Depends(require_level(Level.EDIT))],
     entity_type: Annotated[EntityType, Path(description="Entity type this field is for")],
     key: Annotated[str, Path(min_length=1, max_length=64, pattern="^[a-z0-9_]+$")],
 ) -> list[ExtraField] | JSONResponse:
     try:
-        await delete_extra_field(db, entity_type, key)
+        await delete_extra_field(db, scope, entity_type, key)
     except ItemNotFoundError:
         return JSONResponse(
             status_code=404,
@@ -121,4 +126,4 @@ async def delete(
             ).dict(),
         )
 
-    return await get_extra_fields(db, entity_type)
+    return await get_extra_fields(db, scope, entity_type)

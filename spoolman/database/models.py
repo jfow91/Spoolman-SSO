@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import ForeignKey, Index, Integer, String, Text
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -25,10 +25,63 @@ class Base(AsyncAttrs, DeclarativeBase):
     pass
 
 
+# oidc_sub of the placeholder account that owns every row which existed before multi-user.
+UNCLAIMED_SUB = "__unclaimed__"
+
+
+class User(Base):
+    __tablename__ = "user"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    oidc_sub: Mapped[str] = mapped_column(String(255), unique=True)
+    display_name: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(320))
+    is_admin: Mapped[bool] = mapped_column()
+    disabled: Mapped[bool] = mapped_column()
+    created: Mapped[datetime] = mapped_column()
+    last_login: Mapped[datetime | None] = mapped_column()
+
+
+class Session(Base):
+    __tablename__ = "session"
+
+    # SHA-256 hex of the cookie token; the token itself is never stored.
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("user.id"), index=True)
+    created: Mapped[datetime] = mapped_column()
+    expires: Mapped[datetime] = mapped_column()
+    last_seen: Mapped[datetime] = mapped_column()
+
+
+class ApiKey(Base):
+    __tablename__ = "api_key"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("user.id"), index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    prefix: Mapped[str] = mapped_column(String(8))
+    hash: Mapped[str] = mapped_column(String(64), unique=True)
+    level: Mapped[str] = mapped_column(String(8))  # "edit" | "view"
+    created: Mapped[datetime] = mapped_column()
+    last_used: Mapped[datetime | None] = mapped_column()
+    revoked: Mapped[bool] = mapped_column()
+
+
+class AppSetting(Base):
+    """App-wide settings (only `base_url`); everything else is per account in `setting`."""
+
+    __tablename__ = "app_setting"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text())
+    last_updated: Mapped[datetime] = mapped_column()
+
+
 class Vendor(Base):
     __tablename__ = "vendor"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("user.id"), index=True)
     registered: Mapped[datetime] = mapped_column()
     name: Mapped[str] = mapped_column(String(64))
     empty_spool_weight: Mapped[float | None] = mapped_column(comment="The weight of an empty spool.")
@@ -46,6 +99,7 @@ class Filament(Base):
     __tablename__ = "filament"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("user.id"), index=True)
     registered: Mapped[datetime] = mapped_column()
     name: Mapped[str | None] = mapped_column(String(64))
     vendor_id: Mapped[int | None] = mapped_column(ForeignKey("vendor.id"))
@@ -84,6 +138,7 @@ class Spool(Base):
     __tablename__ = "spool"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("user.id"), index=True)
     registered: Mapped[datetime] = mapped_column()
     first_used: Mapped[datetime | None] = mapped_column()
     last_used: Mapped[datetime | None] = mapped_column()
@@ -115,6 +170,7 @@ class Spool(Base):
 class Setting(Base):
     __tablename__ = "setting"
 
+    owner_id: Mapped[int] = mapped_column(ForeignKey("user.id"), primary_key=True, index=True)
     key: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
     value: Mapped[str] = mapped_column(Text())
     last_updated: Mapped[datetime] = mapped_column()
@@ -154,8 +210,8 @@ class Tag(Base):
     tag's payload onto an NTAG215 so a PN532 can read it leaves one spool carrying two
     physical tags with two different UIDs (#776).
 
-    The unique index on `uid` is the point of the table -- one physical tag means exactly
-    one thing, enforced. It only means that because every write goes through
+    The unique index on `(owner_id, uid)` is the point of the table -- one physical tag means
+    exactly one thing per account, enforced. It only means that because every write goes through
     `spoolman.tags.normalize_uid`; see the module docstring there.
 
     ## Why the target is not just `spool_id`
@@ -182,9 +238,12 @@ class Tag(Base):
     """
 
     __tablename__ = "tag"
+    __table_args__ = (Index("ix_tag_owner_id_uid", "owner_id", "uid", unique=True),)
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("user.id"), index=True)
+    # Indexed through ix_tag_owner_id_uid; every uid lookup is per account.
+    uid: Mapped[str] = mapped_column(String(64))
     # Which kind of thing this tag points at; see the class docstring. Values live in
     # spoolman.tags. A string rather than an enum for the same reason `format` is one:
     # new kinds should not need a schema migration on four databases.

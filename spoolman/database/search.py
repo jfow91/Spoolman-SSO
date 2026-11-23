@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import ColumnElement, and_, or_, select
 from sqlalchemy.orm import InstrumentedAttribute, joinedload
 
+from spoolman.access.scope import owned
 from spoolman.colors import resolve_color
 from spoolman.database import filament as filament_db
 from spoolman.database import models
@@ -27,6 +28,8 @@ from spoolman.math import delta_e, hex_to_rgb, rgb_to_lab
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from spoolman.access.scope import Scope
 
 # How many candidate rows to pull per entity before ranking and trimming to `limit`.
 # The search box only needs the top handful; this bound keeps ranking cheap while
@@ -154,9 +157,9 @@ def _term_clause(
     return or_(*clauses)
 
 
-async def _text_extra_keys(db: AsyncSession, entity_type: EntityType) -> list[str]:
+async def _text_extra_keys(db: AsyncSession, scope: Scope, entity_type: EntityType) -> list[str]:
     """Keys of the entity's text/choice extra fields (the ones worth text-searching)."""
-    fields = await get_extra_fields(db, entity_type)
+    fields = await get_extra_fields(db, scope, entity_type)
     return [f.key for f in fields if f.field_type in _TEXT_EXTRA_TYPES]
 
 
@@ -203,6 +206,7 @@ async def _extra_values(
 
 async def _search_spools(
     db: AsyncSession,
+    scope: Scope,
     terms: list[str],
     limit: int,
     *,
@@ -214,11 +218,11 @@ async def _search_spools(
         ("lot_nr", models.Spool.lot_nr),
     )
     columns = [col for _, col in native_fields]
-    keys = await _text_extra_keys(db, EntityType.spool)
+    keys = await _text_extra_keys(db, scope, EntityType.spool)
 
     load = (joinedload(models.Spool.filament).joinedload(models.Filament.vendor),)
     stmt = (
-        select(models.Spool)
+        owned(select(models.Spool), models.Spool, scope)
         .where(
             and_(
                 *(
@@ -265,6 +269,7 @@ async def _search_spools(
 
 async def _search_filaments(
     db: AsyncSession,
+    scope: Scope,
     terms: list[str],
     limit: int,
     color_hits: list[FilamentMatch],
@@ -288,11 +293,11 @@ async def _search_filaments(
     # The vendor name is searched alongside the filament's own fields, so a query mixing
     # a manufacturer and a material ("bambu petg-cf") can satisfy one term from each.
     columns = [col for _, col in native_fields] + [models.Vendor.name]
-    keys = await _text_extra_keys(db, EntityType.filament)
+    keys = await _text_extra_keys(db, scope, EntityType.filament)
 
     load = (joinedload(models.Filament.vendor),)
     stmt = (
-        select(models.Filament)
+        owned(select(models.Filament), models.Filament, scope)
         .outerjoin(models.Filament.vendor)
         .where(
             and_(
@@ -417,16 +422,16 @@ async def _attach_filament_spools(
         match.spool_count = counts[filament_id]
 
 
-async def _search_vendors(db: AsyncSession, terms: list[str], limit: int) -> list[VendorMatch]:
+async def _search_vendors(db: AsyncSession, scope: Scope, terms: list[str], limit: int) -> list[VendorMatch]:
     native_fields = (
         ("name", models.Vendor.name),
         ("comment", models.Vendor.comment),
     )
     columns = [col for _, col in native_fields]
-    keys = await _text_extra_keys(db, EntityType.vendor)
+    keys = await _text_extra_keys(db, scope, EntityType.vendor)
 
     stmt = (
-        select(models.Vendor)
+        owned(select(models.Vendor), models.Vendor, scope)
         .where(
             and_(
                 *(
@@ -472,16 +477,19 @@ def _filament_color_distance(filament: models.Filament, query_lab: list[float]) 
     return min(delta_e(query_lab, rgb_to_lab(hex_to_rgb(color))) for color in colors)
 
 
-async def _color_matches(db: AsyncSession, color_hex: str, threshold: float, limit: int) -> list[FilamentMatch]:
+async def _color_matches(
+    db: AsyncSession, scope: Scope, color_hex: str, threshold: float, limit: int
+) -> list[FilamentMatch]:
     """Color-similar filaments, closest first."""
     matched_ids = await filament_db.find_by_color(
         db=db,
+        scope=scope,
         color_query_hex=color_hex,
         similarity_threshold=threshold,
     )
     if not matched_ids:
         return []
-    matched, _ = await filament_db.find(db=db, ids=matched_ids)
+    matched, _ = await filament_db.find(db=db, scope=scope, ids=matched_ids)
     query_lab = rgb_to_lab(hex_to_rgb(color_hex))
     matched.sort(key=lambda f: _filament_color_distance(f, query_lab))
     return [FilamentMatch(filament=f, match_field="color") for f in matched[:limit]]
@@ -490,6 +498,7 @@ async def _color_matches(db: AsyncSession, color_hex: str, threshold: float, lim
 async def search(
     *,
     db: AsyncSession,
+    scope: Scope,
     query: str,
     color_similarity_threshold: float = 20.0,
     limit: int = 20,
@@ -505,11 +514,11 @@ async def search(
     color_hex = resolve_color(q)
     is_color_query = color_hex is not None
 
-    color_hits = await _color_matches(db, color_hex, color_similarity_threshold, limit) if color_hex else []
+    color_hits = await _color_matches(db, scope, color_hex, color_similarity_threshold, limit) if color_hex else []
 
-    spools = await _search_spools(db, terms, limit, allow_archived=allow_archived)
-    filaments = await _search_filaments(db, terms, limit, color_hits)
-    vendors = await _search_vendors(db, terms, limit)
+    spools = await _search_spools(db, scope, terms, limit, allow_archived=allow_archived)
+    filaments = await _search_filaments(db, scope, terms, limit, color_hits)
+    vendors = await _search_vendors(db, scope, terms, limit)
 
     # After trimming to `limit`, so we only fetch spools for filaments we return.
     await _attach_filament_spools(db, filaments, spools_per_filament, allow_archived=allow_archived)
@@ -517,9 +526,13 @@ async def search(
     # Numeric query: surface the spool with that exact id at the very top.
     if q.isdigit():
         spool_id = int(q)
-        spool = await db.get(
-            models.Spool, spool_id, options=[joinedload(models.Spool.filament).joinedload(models.Filament.vendor)]
-        )
+        spool = (
+            await db.execute(
+                owned(select(models.Spool).where(models.Spool.id == spool_id), models.Spool, scope).options(
+                    joinedload(models.Spool.filament).joinedload(models.Filament.vendor),
+                ),
+            )
+        ).scalar_one_or_none()
         # An archived spool stays hidden here too, so /search and /spool agree.
         if spool is not None and (allow_archived or not spool.archived):
             spools = [m for m in spools if m.spool.id != spool_id]  # drop weaker text match

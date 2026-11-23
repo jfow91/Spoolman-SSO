@@ -6,6 +6,7 @@ import logging
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from spoolman.access.scope import Scope
 from spoolman.database import filament as db_filament
 from spoolman.database import setting as db_setting
 from spoolman.database import spool as db_spool
@@ -43,9 +44,9 @@ __all__ = [
 ]
 
 
-async def delete_extra_field(db: AsyncSession, entity_type: EntityType, key: str) -> None:
-    """Delete an extra field for a specific entity type."""
-    extra_fields = await get_extra_fields(db, entity_type)
+async def delete_extra_field(db: AsyncSession, scope: Scope, entity_type: EntityType, key: str) -> None:
+    """Delete one of the account's extra fields, and the account's values of it."""
+    extra_fields = await get_extra_fields(db, scope, entity_type)
 
     # Check if the field exists
     if not any(field.key == key for field in extra_fields):
@@ -54,26 +55,29 @@ async def delete_extra_field(db: AsyncSession, entity_type: EntityType, key: str
     extra_fields = [field for field in extra_fields if field.key != key]
 
     setting_def = parse_setting(f"extra_fields_{entity_type.name}")
-    await db_setting.update(db=db, definition=setting_def, value=json.dumps(jsonable_encoder(extra_fields)))
+    value = json.dumps(jsonable_encoder(extra_fields))
+    await db_setting.update(db=db, scope=scope, definition=setting_def, value=value)
 
     # Update cache
-    extra_field_cache[entity_type] = extra_fields
+    extra_field_cache[(scope.account_id, entity_type)] = extra_fields
 
     logger.info("Deleted extra field %r for entity type %r.", key, entity_type.name)
 
     if entity_type == EntityType.vendor:
-        await db_vendor.clear_extra_field(db, key)
+        await db_vendor.clear_extra_field(db, scope, key)
     elif entity_type == EntityType.filament:
-        await db_filament.clear_extra_field(db, key)
+        await db_filament.clear_extra_field(db, scope, key)
     elif entity_type == EntityType.spool:
-        await db_spool.clear_extra_field(db, key)
+        await db_spool.clear_extra_field(db, scope, key)
     else:
         raise ValueError(f"Unknown entity type {entity_type.name}.")
 
 
-async def populate_with_defaults(db: AsyncSession, entity_type: EntityType, existing: dict[str, str]) -> None:
+async def populate_with_defaults(
+    db: AsyncSession, scope: Scope, entity_type: EntityType, existing: dict[str, str]
+) -> None:
     """Populate the given list of extra fields with defaults."""
-    extra_fields = await get_extra_fields(db, entity_type)
+    extra_fields = await get_extra_fields(db, scope, entity_type)
     for extra_field in extra_fields:
         if extra_field.default_value is None:
             continue

@@ -5,6 +5,8 @@
 	import AddSpoolModal from '$components/AddSpoolModal.svelte';
 	import QrScannerModal from '$components/QrScannerModal.svelte';
 	import Toaster from '$components/Toaster.svelte';
+	import ClaimDataPrompt from '$components/ClaimDataPrompt.svelte';
+	import { getMe, type Me } from '$lib/api/account';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { settings } from '$lib/stores/settings.svelte';
 	import { serverInfo } from '$lib/stores/serverInfo.svelte';
@@ -39,6 +41,14 @@
 	$effect(() => {
 		document.documentElement.lang = getLocale();
 		document.documentElement.dir = getTextDirection();
+	});
+
+	let me = $state<Me>();
+	let claimDismissed = $state(false);
+	$effect(() => {
+		getMe()
+			.then((r) => (me = r))
+			.catch(() => {}); // no account (or signed out): the menu just stays hidden
 	});
 
 	// Load server settings and start central live-sync (keeps the reactive cache,
@@ -155,7 +165,7 @@
 </script>
 
 <div class="app">
-	<TopBar onadd={() => ui.openAddModal()} onscan={() => ui.openScanner()} />
+	<TopBar {me} onadd={() => ui.openAddModal()} onscan={() => ui.openScanner()} />
 
 	<main>{@render children()}</main>
 	<Footer />
@@ -169,6 +179,10 @@
 />
 
 <QrScannerModal open={ui.scannerOpen} onclose={() => ui.closeScanner()} />
+
+{#if me?.canClaim && !claimDismissed}
+	<ClaimDataPrompt onclose={() => (claimDismissed = true)} />
+{/if}
 
 <Toaster />
 
